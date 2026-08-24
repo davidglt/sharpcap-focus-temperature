@@ -1,0 +1,2 @@
+DateTime,TemperatureC,FocuserSteps,StudentizedResidual,Reason
+2026-08-21 23:46:22,27.59,25425,4.849,Studentized residual > 3.0
