@@ -19,6 +19,7 @@ Features
 - Fits a linear regression between focuser position and temperature.
 - Predicts focuser position for a target temperature.
 - Exports cleaned results and removed outliers to CSV.
+- Exports last valid autofocus reference and regression model to JSON.
 - Generates a chart with regression and two side summary tables.
 
 Author
@@ -41,6 +42,7 @@ GPL-3.0-or-later
 
 import argparse
 import csv
+import json
 import math
 import re
 from datetime import datetime, timedelta
@@ -68,6 +70,14 @@ def parse_arguments():
     "--output-csv",
     default="sharpcap_final_focus.csv",
     help="Output CSV file path.",
+  )
+  parser.add_argument(
+    "--output-state-json",
+    default="sharpcap_focus_state.json",
+    help=(
+      "Output JSON file with last valid autofocus reference and regression "
+      "model (TCF, slope, intercept). Default: sharpcap_focus_state.json"
+    ),
   )
   parser.add_argument(
     "--min-position",
@@ -265,6 +275,49 @@ def write_csv(results, output_csv: Path, fieldnames):
     writer = csv.DictWriter(handle, fieldnames=fieldnames)
     writer.writeheader()
     writer.writerows(results)
+
+
+def write_state_json(
+  results,
+  output_json: Path,
+  inverse_slope,
+  slope,
+  intercept,
+):
+  """Write the last valid autofocus reference and regression model to JSON.
+
+  The JSON is intended as the single source of truth consumed by the nightly
+  sequencer.  Fields:
+
+  - timestamp_ref / temp_ref / focus_ref   : last clean autofocus point.
+  - last_temp_applied / last_focus_applied : same values; reserved so the
+    sequencer can overwrite them at runtime without touching the reference.
+  - model_tcf      : TCF = 1/k  (steps / °C).
+  - model_inv_tcf  : k           (°C / step).
+  - model_intercept_c : regression intercept b (°C).
+
+  Returns True when the file was written, False when results is empty.
+  """
+  if not results:
+    return False
+
+  last_result = results[-1]
+  state = {
+    "timestamp_ref": last_result["DateTime"],
+    "temp_ref": round(float(last_result["TemperatureC"]), 2),
+    "focus_ref": int(last_result["FocuserSteps"]),
+    "last_temp_applied": round(float(last_result["TemperatureC"]), 2),
+    "last_focus_applied": int(last_result["FocuserSteps"]),
+    "model_tcf": None if inverse_slope is None else round(float(inverse_slope), 2),
+    "model_inv_tcf": None if slope is None else round(float(slope), 6),
+    "model_intercept_c": None if intercept is None else round(float(intercept), 3),
+  }
+
+  with output_json.open("w", encoding="utf-8") as handle:
+    json.dump(state, handle, indent=2, ensure_ascii=False)
+    handle.write("\n")
+
+  return True
 
 
 def style_table(table, fontsize=7.0, header_height=0.058, row_height=0.050):
@@ -605,6 +658,7 @@ def main():
   output_csv = Path(args.output_csv).resolve()
   outliers_csv = output_csv.with_name("sharpcap_removed_outliers.csv")
   chart_path = output_csv.with_name("sharpcap_focus_temperature.png")
+  state_json = Path(args.output_state_json).resolve()
 
   log_files = get_log_files(log_path, start_date)
   results = parse_logs(
@@ -706,6 +760,22 @@ def main():
         )
     else:
       print("Regression could not be calculated with the available points.")
+
+    state_written = write_state_json(
+      results,
+      state_json,
+      inverse_slope,
+      slope,
+      intercept,
+    )
+
+    if state_written:
+      print(f"State JSON created: {state_json}")
+      print(f"Reference autofocus timestamp: {results[-1]['DateTime']}")
+      print(f"Reference temperature: {results[-1]['TemperatureC']:.2f} {DEG_C}")
+      print(f"Reference focus: {results[-1]['FocuserSteps']} steps")
+    else:
+      print("State JSON was not created because no valid autofocus reference was available.")
 
     print(f"Chart created: {chart_path}")
   else:
