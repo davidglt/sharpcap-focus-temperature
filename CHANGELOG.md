@@ -7,11 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- README: *Sister repository* section added, documenting the sibling-directory
+  relationship with `sharpcap-focus-sequencer` and the canonical two-repository
+  layout. `<any-parent>\` is used instead of a hardcoded absolute path to reflect
+  that the installation path is unrestricted.
+- README: *Typical workflow* step 5 updated to mention the sequencer as the
+  official consumer of `sharpcap_focus_state.json`.
+
 ### Changed
 
 - `.gitignore`: `sharpcap_final_focus.csv`, `sharpcap_removed_outliers.csv`, and
   `sharpcap_focus_temperature.png` are now ignored. These files are regenerated on
   every run and should not be tracked by git.
+
+### Removed
+
+- `run_focuser.bat`: superseded by `resolve_producer_python()` in the sibling
+  `sharpcap-focus-sequencer`. The sequencer now locates and invokes
+  `sharpcap_focuser.py` directly using the sibling `.venv` Python interpreter.
+  For a manual or diagnostic run, call `sharpcap_focuser.py` directly from the
+  command line using the virtual environment:
+  ```
+  .venv\Scripts\python.exe sharpcap_focuser.py
+  ```
 
 ## [1.1.0] - 2026-08-25
 
