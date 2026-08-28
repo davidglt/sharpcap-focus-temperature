@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `.gitignore`: `sharpcap_final_focus.csv`, `sharpcap_removed_outliers.csv`, and
+  `sharpcap_focus_temperature.png` are now ignored. These files are regenerated on
+  every run and should not be tracked by git.
+
 ## [1.1.0] - 2026-08-25
 
 ### Added

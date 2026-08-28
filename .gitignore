@@ -87,13 +87,8 @@ site/
 .DS_Store
 Thumbs.db
 
-# Runtime state file produced by sharpcap_focuser.py
-# Contains the last autofocus reference and thermal model coefficients.
-# This file is updated every run and should not be committed.
+# Runtime artifacts produced by sharpcap_focuser.py — not committed
 sharpcap_focus_state.json
-
-# Project outputs (optional)
-# Uncomment these if you do not want generated analysis files in git
-# sharpcap_final_focus.csv
-# sharpcap_removed_outliers.csv
-# sharpcap_focus_temperature.png
+sharpcap_final_focus.csv
+sharpcap_removed_outliers.csv
+sharpcap_focus_temperature.png
