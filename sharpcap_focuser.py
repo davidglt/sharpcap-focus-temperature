@@ -48,10 +48,6 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-import numpy as np
-import statsmodels.api as sm
-
 
 DEG_C = "\u00B0C"
 
@@ -237,6 +233,9 @@ def parse_logs(log_files, min_position: int, max_position: int, start_date):
 
 def filter_outliers_studentized(results, threshold: float):
   """Remove outliers using externally studentized residuals."""
+  import numpy as np
+  import statsmodels.api as sm
+
   if len(results) < 5:
     return results, [], 0
 
@@ -352,6 +351,9 @@ def create_chart(
   auto_axis: bool,
 ):
   """Create the scatter plot, regression line, and side summary tables."""
+  import matplotlib.pyplot as plt
+  import numpy as np
+
   x = np.array([row["FocuserSteps"] for row in results], dtype=float)
   y = np.array([row["TemperatureC"] for row in results], dtype=float)
 
