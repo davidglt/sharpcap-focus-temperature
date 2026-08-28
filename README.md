@@ -108,6 +108,44 @@ the real model.
 See the [sharpcap-focus-sequencer](https://github.com/davidglt/sharpcap-focus-sequencer)
 README for the full two-repository workflow and installation instructions.
 
+## Installation
+
+Clone the repository and create the virtual environment:
+
+```bash
+cd <any-parent>
+git clone https://github.com/davidglt/sharpcap-focus-temperature.git
+cd sharpcap-focus-temperature
+python -m venv .venv
+.venv\Scripts\pip install -r requirements\requirements.txt
+```
+
+Always invoke the script through the project’s own virtual environment:
+
+```bash
+.venv\Scripts\python.exe sharpcap_focuser.py
+```
+
+### Windows Execution Policy
+
+By default, Windows may block scripts downloaded from the internet.
+To allow the virtual environment activation scripts to run, set the execution
+policy for the current user **once** from an elevated PowerShell prompt:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+
+> **What this does:** allows locally created scripts to run, and allows
+> downloaded scripts that are signed by a trusted publisher. It does **not**
+> disable Windows Defender or any other security mechanism.
+>
+> If you prefer a narrower change, you can unblock only the specific files
+> instead:
+> ```powershell
+> Unblock-File -Path C:\astro\sharpcap-focus-temperature\sharpcap_focuser.py
+> ```
+
 ## Requirements
 
 - Python 3.10 or newer recommended.
