@@ -51,8 +51,8 @@ from pathlib import Path
 
 # Used in matplotlib chart labels only (supports Unicode rendering).
 DEG_C_CHART = "\u00B0C"
-# Used in console print() output (ASCII-safe for Windows cp1252 consoles).
-DEG_C_CONSOLE = "degC"
+# Used in console print() output (masculine ordinal U+00BA, safe in cp1252).
+DEG_C_CONSOLE = "\u00BAC"
 
 
 def parse_arguments():
@@ -129,7 +129,7 @@ def parse_arguments():
     "--predict-temperature",
     type=float,
     default=None,
-    help="Predict focuser position for this temperature in degC.",
+    help="Predict focuser position for this temperature in ºC.",
   )
   parser.add_argument(
     "--no-remove-outliers",
@@ -294,9 +294,9 @@ def write_state_json(
   - timestamp_ref / temp_ref / focus_ref   : last clean autofocus point.
   - last_temp_applied / last_focus_applied : same values; reserved so the
     sequencer can overwrite them at runtime without touching the reference.
-  - model_tcf      : TCF = 1/k  (steps/degC).
-  - model_inv_tcf  : k           (degC/step).
-  - model_intercept_c : regression intercept b (degC).
+  - model_tcf      : TCF = 1/k  (steps/ºC).
+  - model_inv_tcf  : k           (ºC/step).
+  - model_intercept_c : regression intercept b (ºC).
 
   Returns True when the file was written, False when results is empty.
   """
@@ -359,7 +359,7 @@ def create_chart(
   import matplotlib.pyplot as plt
   import numpy as np
 
-  # DEG_C_CHART is used here because matplotlib renders Unicode correctly.
+  # DEG_C_CHART used here: matplotlib renders Unicode correctly.
   DC = DEG_C_CHART
 
   x = np.array([row["FocuserSteps"] for row in results], dtype=float)
