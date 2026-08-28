@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# SPDX-FileCopyrightText: 2026 David González López-Tercero <davidglt@dragonit.es>
+# SPDX-FileCopyrightText: 2026 David Gonzalez Lopez-Tercero <davidglt@dragonit.es>
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
@@ -24,7 +24,7 @@ Features
 
 Author
 ------
-David González López-Tercero
+David Gonzalez Lopez-Tercero
 
 Contact
 -------
@@ -49,7 +49,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 
-DEG_C = "\u00B0C"
+# Used in matplotlib chart labels only (supports Unicode rendering).
+DEG_C_CHART = "\u00B0C"
+# Used in console print() output (ASCII-safe for Windows cp1252 consoles).
+DEG_C_CONSOLE = "degC"
 
 
 def parse_arguments():
@@ -126,7 +129,7 @@ def parse_arguments():
     "--predict-temperature",
     type=float,
     default=None,
-    help=f"Predict focuser position for this temperature in {DEG_C}.",
+    help="Predict focuser position for this temperature in degC.",
   )
   parser.add_argument(
     "--no-remove-outliers",
@@ -206,7 +209,7 @@ def parse_logs(log_files, min_position: int, max_position: int, start_date):
           "%Y-%m-%d %H:%M:%S",
         )
 
-        # Apply the date filter to the actual event timestamp, not just to the
+        # Apply date filter to the actual event timestamp, not just to the
         # file modification date, to avoid keeping stale entries from touched logs.
         if start_date is not None and event_dt.date() < start_date:
           continue
@@ -285,15 +288,15 @@ def write_state_json(
 ):
   """Write the last valid autofocus reference and regression model to JSON.
 
-  The JSON is intended as the single source of truth consumed by the nightly
-  sequencer.  Fields:
+  The JSON is the single source of truth consumed by the nightly sequencer.
+  Fields:
 
   - timestamp_ref / temp_ref / focus_ref   : last clean autofocus point.
   - last_temp_applied / last_focus_applied : same values; reserved so the
     sequencer can overwrite them at runtime without touching the reference.
-  - model_tcf      : TCF = 1/k  (steps / °C).
-  - model_inv_tcf  : k           (°C / step).
-  - model_intercept_c : regression intercept b (°C).
+  - model_tcf      : TCF = 1/k  (steps/degC).
+  - model_inv_tcf  : k           (degC/step).
+  - model_intercept_c : regression intercept b (degC).
 
   Returns True when the file was written, False when results is empty.
   """
@@ -351,8 +354,13 @@ def create_chart(
   auto_axis: bool,
 ):
   """Create the scatter plot, regression line, and side summary tables."""
+  import matplotlib
+  matplotlib.use("Agg")
   import matplotlib.pyplot as plt
   import numpy as np
+
+  # DEG_C_CHART is used here because matplotlib renders Unicode correctly.
+  DC = DEG_C_CHART
 
   x = np.array([row["FocuserSteps"] for row in results], dtype=float)
   y = np.array([row["TemperatureC"] for row in results], dtype=float)
@@ -482,7 +490,7 @@ def create_chart(
       )
 
       ax.annotate(
-        f"{predicted_steps_rounded} steps @ {predict_temperature:.2f} {DEG_C}",
+        f"{predicted_steps_rounded} steps @ {predict_temperature:.2f} {DC}",
         xy=(predicted_steps, predict_temperature),
         xytext=(10, 10),
         textcoords="offset points",
@@ -494,7 +502,7 @@ def create_chart(
 
   ax.set_title("Focuser Position vs Temperature", fontsize=11)
   ax.set_xlabel("s: Focuser Steps", fontsize=9.5, labelpad=6)
-  ax.set_ylabel(f"T: Temperature ({DEG_C})", fontsize=9.5)
+  ax.set_ylabel(f"T: Temperature ({DC})", fontsize=9.5)
   ax.tick_params(axis="both", labelsize=8.5)
   ax.grid(True, alpha=0.3)
 
@@ -522,7 +530,7 @@ def create_chart(
 
   if prediction_marker is not None:
     handles.append(prediction_marker)
-    labels.append(f"Prediction at {predict_temperature:.2f} {DEG_C}")
+    labels.append(f"Prediction at {predict_temperature:.2f} {DC}")
 
   legend = info_ax.legend(
     handles,
@@ -545,31 +553,31 @@ def create_chart(
 
   regression_equation = "-"
   if slope is not None and intercept is not None:
-    regression_equation = "T = k·s + b"
+    regression_equation = "T = k*s + b"
 
   model_rows = [
     ["Regression equation", regression_equation],
-    ["T", f"Temperature ({DEG_C})"],
+    ["T", f"Temperature ({DC})"],
     ["s", "Focuser Steps"],
   ]
 
   if predict_temperature is not None:
-    model_rows.append(["Target T", f"{predict_temperature:.2f} {DEG_C}"])
+    model_rows.append(["Target T", f"{predict_temperature:.2f} {DC}"])
 
   if slope is not None:
-    model_rows.append([f"k ({DEG_C}/step)", f"{slope:.6f}"])
+    model_rows.append([f"k ({DC}/step)", f"{slope:.6f}"])
   else:
-    model_rows.append([f"k ({DEG_C}/step)", "-"])
+    model_rows.append([f"k ({DC}/step)", "-"])
 
   if inverse_slope is not None:
-    model_rows.append([f"TCF = 1/k (step/{DEG_C})", f"{inverse_slope:.2f}"])
+    model_rows.append([f"TCF = 1/k (step/{DC})", f"{inverse_slope:.2f}"])
   else:
-    model_rows.append([f"TCF = 1/k (step/{DEG_C})", "-"])
+    model_rows.append([f"TCF = 1/k (step/{DC})", "-"])
 
   if intercept is not None:
-    model_rows.append([f"b ({DEG_C})", f"{intercept:.3f}"])
+    model_rows.append([f"b ({DC})", f"{intercept:.3f}"])
   else:
-    model_rows.append([f"b ({DEG_C})", "-"])
+    model_rows.append([f"b ({DC})", "-"])
 
   if predicted_steps_rounded is not None:
     model_rows.append(["Focus(T)", f"{predicted_steps_rounded} steps"])
@@ -593,10 +601,10 @@ def create_chart(
 
   if auto_axis:
     focus_rows.append(["X axis", "Auto (steps)"])
-    focus_rows.append(["Y axis", f"Auto ({DEG_C})"])
+    focus_rows.append(["Y axis", f"Auto ({DC})"])
   else:
     focus_rows.append(["X axis", f"{x_min:.0f} to {x_max:.0f} steps"])
-    focus_rows.append(["Y axis", f"{y_min:.0f} to {y_max:.0f} {DEG_C}"])
+    focus_rows.append(["Y axis", f"{y_min:.0f} to {y_max:.0f} {DC}"])
 
   info_ax.text(
     0.01,
@@ -721,7 +729,7 @@ def main():
     print("Axis mode: automatic")
   else:
     print(f"X axis limits: {args.x_min} to {args.x_max} steps")
-    print(f"Y axis limits: {args.y_min} to {args.y_max} {DEG_C}")
+    print(f"Y axis limits: {args.y_min} to {args.y_max} {DEG_C_CONSOLE}")
 
   if results:
     first_focus = results[0]["FocuserSteps"]
@@ -748,16 +756,16 @@ def main():
 
     if slope is not None and intercept is not None:
       print(f"Regression equation: T = {slope:.6f} * Steps + {intercept:.3f}")
-      print(f"k = {slope:.6f} {DEG_C}/step")
+      print(f"k = {slope:.6f} {DEG_C_CONSOLE}/step")
 
       if inverse_slope is not None:
-        print(f"TCF = 1/k = {inverse_slope:.2f} steps/{DEG_C}")
+        print(f"TCF = 1/k = {inverse_slope:.2f} steps/{DEG_C_CONSOLE}")
 
-      print(f"b = {intercept:.3f} {DEG_C}")
+      print(f"b = {intercept:.3f} {DEG_C_CONSOLE}")
 
       if predicted_steps_rounded is not None and args.predict_temperature is not None:
         print(
-          f"Predicted focus for {args.predict_temperature:.2f} {DEG_C}: "
+          f"Predicted focus for {args.predict_temperature:.2f} {DEG_C_CONSOLE}: "
           f"{predicted_steps_rounded} steps"
         )
     else:
@@ -774,14 +782,14 @@ def main():
     if state_written:
       print(f"State JSON created: {state_json}")
       print(f"Reference autofocus timestamp: {results[-1]['DateTime']}")
-      print(f"Reference temperature: {results[-1]['TemperatureC']:.2f} {DEG_C}")
+      print(f"Reference temperature: {results[-1]['TemperatureC']:.2f} {DEG_C_CONSOLE}")
       print(f"Reference focus: {results[-1]['FocuserSteps']} steps")
     else:
-      print("State JSON was not created because no valid autofocus reference was available.")
+      print("State JSON was not created: no valid autofocus reference available.")
 
     print(f"Chart created: {chart_path}")
   else:
-    print("Chart was not created because no autofocus results were found.")
+    print("Chart was not created: no autofocus results were found.")
 
 
 if __name__ == "__main__":
