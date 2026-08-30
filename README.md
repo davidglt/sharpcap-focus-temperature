@@ -10,11 +10,11 @@ Supports two optical tubes via `--tube {main,guide}`:
 | Tube | Hardware | EAF position range | Typical position | State JSON |
 |---|---|---|---|---|
 | `main` (default) | C8 + ASI2600MC Pro | 24 000 – 27 000 steps | ~25 000 | `sharpcap_focus_state.json` |
-| `guide` | 50ED + ASI224MC | 330 000 – 370 000 steps | ~335 000 | `sharpcap_focus_state_guide.json` |
+| `guide` | 50ED + ASI224MC | 325 000 – 365 000 steps | ~345 000 | `sharpcap_focus_state_guide.json` |
 
 > **Note on guide tube range:** the 50ED EAF (ASCOM.EAF_2.Focuser) is configured
 > with **Max Steps = 520 000** in ASICap → Focuser → Advanced, but autofocus
-> results during normal operation fall in the 330 000 – 370 000 step window.
+> results during normal operation fall in the 325 000 – 365 000 step window.
 > Use `--min-position` / `--max-position` to override these defaults if your
 > setup differs.
 
@@ -236,7 +236,7 @@ python sharpcap_focuser.py \
 
 | Option | Default | Description |
 |---|---|---|
-| `--tube` | `main` | Tube to analyse: `main` (C8 + ASI2600MC Pro, 24 000–27 000 steps) or `guide` (50ED + ASI224MC, 330 000–370 000 steps). Selects per-tube defaults for position range and output file names. |
+| `--tube` | `main` | Tube to analyse: `main` (C8 + ASI2600MC Pro, 24 000–27 000 steps) or `guide` (50ED + ASI224MC, 325 000–365 000 steps). Selects per-tube defaults for position range and output file names. |
 | `--log-path` | SharpCap logs folder | SharpCap log folder path. |
 | `--output-csv` | per tube | Output CSV file path. |
 | `--output-state-json` | per tube | Output JSON file with last valid autofocus reference and regression model. |

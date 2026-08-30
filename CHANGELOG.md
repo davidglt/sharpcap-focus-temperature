@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-08-30
+
+### Fixed
+
+- Guide tube position range corrected: 330 000 – 370 000 → **325 000 – 365 000** steps.
+  Typical operating position updated from ~335 000 to **~345 000** steps.
+  Updated in `TUBE_DEFAULTS["guide"]` (`min_position`, `max_position`, `x_min`, `x_max`),
+  module docstring, `--tube` help text, README tube table, README note, and
+  README command-line options table.
+
 ## [1.3.1] - 2026-08-30
 
 ### Fixed
@@ -22,9 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Documentation
 
 - README: expanded guide tube row in the tube table to show the full position
-  filter range (330 000 – 370 000 steps) alongside the typical operating
-  position (~335 000 steps), so users can adjust `--min-position` /
-  `--max-position` without reading the source code.
+  filter range alongside the typical operating position, so users can adjust
+  `--min-position` / `--max-position` without reading the source code.
 - README: added note on 50ED EAF Max Steps setting (520 000 in ASICap) and
   when to use `--min-position` / `--max-position` overrides.
 - README: `--tube` option description in the command-line table now includes
@@ -38,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output file names, and chart title.
   - `main` (default): C8 + ASI2600MC Pro, 24 000 – 27 000 steps,
     `sharpcap_focus_state.json`.
-  - `guide`: 50ED + ASI224MC, 330 000 – 370 000 steps,
+  - `guide`: 50ED + ASI224MC, 325 000 – 365 000 steps,
     `sharpcap_focus_state_guide.json`.
 - Synthetic data support: if a `sharpcap_synthetic_data_focus[_guide].csv` file
   exists beside the output CSV it is merged with real data before regression.
@@ -105,7 +114,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--log-path` argument for custom SharpCap log folder.
 - `--output-csv` argument for custom output CSV path.
 
-[Unreleased]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.3.2...HEAD
+[1.3.2]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.1.0...v1.2.0

@@ -23,7 +23,7 @@ Features
 - Generates a chart with regression and two side summary tables.
 - Supports two optical tubes via --tube {main,guide}:
     main  — C8 + ASI2600MC Pro  (~25 000 steps, state JSON: sharpcap_focus_state.json)
-    guide — 50ED + ASI224MC     (~350 000 steps, state JSON: sharpcap_focus_state_guide.json)
+    guide — 50ED + ASI224MC     (~345 000 steps, state JSON: sharpcap_focus_state_guide.json)
 - Automatically loads synthetic data if a matching CSV exists beside the output CSV.
   Synthetic points are:
     * merged with real data before regression.
@@ -74,10 +74,10 @@ TUBE_DEFAULTS = {
     },
     "guide": {
         "label": "Guide tube 50ED",
-        "min_position": 330000,
-        "max_position": 370000,
-        "x_min": 330000.0,
-        "x_max": 370000.0,
+        "min_position": 325000,
+        "max_position": 365000,
+        "x_min": 325000.0,
+        "x_max": 365000.0,
         "output_csv": "sharpcap_data_focus_guide.csv",
         "output_state": "sharpcap_focus_state_guide.json",
         "chart_name": "sharpcap_focus_temperature_guide.png",
@@ -97,7 +97,7 @@ def parse_arguments():
       "Optical tube to analyse. Selects per-tube defaults for position "
       "range, output file names, and chart title. "
       "'main' = C8 + ASI2600MC Pro (~25 000 steps). "
-      "'guide' = 50ED + ASI224MC (~350 000 steps). "
+      "'guide' = 50ED + ASI224MC (~345 000 steps). "
       "Individual flags (--min-position, --output-state-json, etc.) "
       "always override the tube defaults. Default: main"
     ),
@@ -476,7 +476,6 @@ def create_chart(
     ax.set_xlim(x_min, x_max)
     ax.set_ylim(y_min, y_max)
 
-  # Legend — show point counts for autofocus results and removed outliers
   handles = [scatter]
   labels = [f"Autofocus results ({real_count} pts)"]
   if synth_scatter is not None:
@@ -522,7 +521,6 @@ def create_chart(
   if predicted_steps_rounded is not None:
     model_rows.append(["Focus(T)", f"{predicted_steps_rounded} steps"])
 
-  # Focus table — First/Last/Delta focus, then Autofocus pts, then Synthetic pts, then diagnostics
   focus_rows = []
   if first_focus is not None:
     focus_rows.append(["First focus", f"{first_focus} steps"])
