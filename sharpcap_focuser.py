@@ -21,6 +21,9 @@ Features
 - Exports cleaned results and removed outliers to CSV.
 - Exports last valid autofocus reference and regression model to JSON.
 - Generates a chart with regression and two side summary tables.
+- Supports two optical tubes via --tube {main,guide}:
+    main  — C8 + ASI2600MC Pro  (~25 000 steps, state JSON: sharpcap_focus_state.json)
+    guide — 50ED + ASI224MC     (~335 000 steps, state JSON: sharpcap_focus_state_guide.json)
 
 Author
 ------
@@ -54,11 +57,49 @@ DEG_C_CHART = "\u00B0C"
 # Used in console print() output (masculine ordinal U+00BA, safe in cp1252).
 DEG_C_CONSOLE = "\u00BAC"
 
+# Per-tube defaults -----------------------------------------------------------
+TUBE_DEFAULTS = {
+    "main": {
+        "label":          "Main tube C8",
+        "min_position":   24000,
+        "max_position":   27000,
+        "x_min":          24000.0,
+        "x_max":          27000.0,
+        "output_csv":     "sharpcap_final_focus.csv",
+        "output_state":   "sharpcap_focus_state.json",
+        "chart_name":     "sharpcap_focus_temperature.png",
+    },
+    "guide": {
+        "label":          "Guide tube 50ED",
+        "min_position":   330000,
+        "max_position":   340000,
+        "x_min":          330000.0,
+        "x_max":          340000.0,
+        "output_csv":     "sharpcap_final_focus_guide.csv",
+        "output_state":   "sharpcap_focus_state_guide.json",
+        "chart_name":     "sharpcap_focus_temperature_guide.png",
+    },
+}
+# -----------------------------------------------------------------------------
+
 
 def parse_arguments():
   """Parse and return command-line arguments."""
   parser = argparse.ArgumentParser(
     description="Extract SharpCap autofocus results and create CSV and chart."
+  )
+  parser.add_argument(
+    "--tube",
+    choices=["main", "guide"],
+    default="main",
+    help=(
+      "Optical tube to analyse. Selects per-tube defaults for position "
+      "range, output file names, and chart title. "
+      "'main' = C8 + ASI2600MC Pro (~25 000 steps). "
+      "'guide' = 50ED + ASI224MC (~335 000 steps). "
+      "Individual flags (--min-position, --output-state-json, etc.) "
+      "always override the tube defaults. Default: main"
+    ),
   )
   parser.add_argument(
     "--log-path",
@@ -67,40 +108,40 @@ def parse_arguments():
   )
   parser.add_argument(
     "--output-csv",
-    default="sharpcap_final_focus.csv",
-    help="Output CSV file path.",
+    default=None,
+    help="Output CSV file path. Default depends on --tube.",
   )
   parser.add_argument(
     "--output-state-json",
-    default="sharpcap_focus_state.json",
+    default=None,
     help=(
       "Output JSON file with last valid autofocus reference and regression "
-      "model (TCF, slope, intercept). Default: sharpcap_focus_state.json"
+      "model (TCF, slope, intercept). Default depends on --tube."
     ),
   )
   parser.add_argument(
     "--min-position",
     type=int,
-    default=24000,
-    help="Minimum focuser position to keep. Default: 24000",
+    default=None,
+    help="Minimum focuser position to keep. Default depends on --tube.",
   )
   parser.add_argument(
     "--max-position",
     type=int,
-    default=27000,
-    help="Maximum focuser position to keep. Default: 27000",
+    default=None,
+    help="Maximum focuser position to keep. Default depends on --tube.",
   )
   parser.add_argument(
     "--x-min",
     type=float,
-    default=24000,
-    help="Minimum X axis limit. Default: 24000",
+    default=None,
+    help="Minimum X axis limit. Default depends on --tube.",
   )
   parser.add_argument(
     "--x-max",
     type=float,
-    default=27000,
-    help="Maximum X axis limit. Default: 27000",
+    default=None,
+    help="Maximum X axis limit. Default depends on --tube.",
   )
   parser.add_argument(
     "--y-min",
@@ -352,6 +393,7 @@ def create_chart(
   y_min: float,
   y_max: float,
   auto_axis: bool,
+  tube_label: str,
 ):
   """Create the scatter plot, regression line, and side summary tables."""
   import matplotlib
@@ -500,7 +542,7 @@ def create_chart(
         arrowprops=dict(arrowstyle="->", color="darkgreen"),
       )
 
-  ax.set_title("Focuser Position vs Temperature", fontsize=11)
+  ax.set_title(f"Focuser Position vs Temperature — {tube_label}", fontsize=11)
   ax.set_xlabel("s: Focuser Steps", fontsize=9.5, labelpad=6)
   ax.set_ylabel(f"T: Temperature ({DC})", fontsize=9.5)
   ax.tick_params(axis="both", labelsize=8.5)
@@ -661,20 +703,33 @@ def main():
   """Run the full extraction, filtering, export, and plotting workflow."""
   args = parse_arguments()
 
+  # Apply per-tube defaults; individual flags override them.
+  td = TUBE_DEFAULTS[args.tube]
+  tube_label    = td["label"]
+  min_position  = args.min_position  if args.min_position  is not None else td["min_position"]
+  max_position  = args.max_position  if args.max_position  is not None else td["max_position"]
+  x_min         = args.x_min         if args.x_min         is not None else td["x_min"]
+  x_max         = args.x_max         if args.x_max         is not None else td["x_max"]
+  output_csv_name    = args.output_csv        if args.output_csv        is not None else td["output_csv"]
+  output_state_name  = args.output_state_json if args.output_state_json is not None else td["output_state"]
+
   remove_outliers = not args.no_remove_outliers
   start_date = get_start_date(args.last_days)
 
-  log_path = Path(args.log_path)
-  output_csv = Path(args.output_csv).resolve()
-  outliers_csv = output_csv.with_name("sharpcap_removed_outliers.csv")
-  chart_path = output_csv.with_name("sharpcap_focus_temperature.png")
-  state_json = Path(args.output_state_json).resolve()
+  log_path   = Path(args.log_path)
+  output_csv = Path(output_csv_name).resolve()
+  outliers_csv = output_csv.with_name(
+      output_csv.stem.replace("sharpcap_final_focus", "sharpcap_removed_outliers")
+      + output_csv.suffix
+  )
+  chart_path = output_csv.with_name(td["chart_name"])
+  state_json = Path(output_state_name).resolve()
 
   log_files = get_log_files(log_path, start_date)
   results = parse_logs(
     log_files,
-    args.min_position,
-    args.max_position,
+    min_position,
+    max_position,
     start_date,
   )
 
@@ -710,6 +765,7 @@ def main():
     print(f"Outliers CSV created: {outliers_csv}")
     print(f"Outliers written: {len(removed_outliers)}")
 
+  print(f"Tube: {tube_label}")
   print(f"Extracted autofocus results: {original_count}")
   print(f"Remaining points after filters: {len(results)}")
 
@@ -728,7 +784,7 @@ def main():
   if args.auto_axis:
     print("Axis mode: automatic")
   else:
-    print(f"X axis limits: {args.x_min} to {args.x_max} steps")
+    print(f"X axis limits: {x_min} to {x_max} steps")
     print(f"Y axis limits: {args.y_min} to {args.y_max} {DEG_C_CONSOLE}")
 
   if results:
@@ -747,11 +803,12 @@ def main():
       args.predict_temperature,
       args.studentized_threshold,
       remove_outliers,
-      args.x_min,
-      args.x_max,
+      x_min,
+      x_max,
       args.y_min,
       args.y_max,
       args.auto_axis,
+      tube_label,
     )
 
     if slope is not None and intercept is not None:

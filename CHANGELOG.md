@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--tube {main,guide}` option: selects per-tube defaults for focuser position
+  range, output file names, and chart title.  Individual flags always override
+  tube defaults.
+    - `main`  (default) — C8 + ASI2600MC Pro, ~25 000 steps:
+        - `--min-position` 24 000 / `--max-position` 27 000
+        - `--output-state-json` `sharpcap_focus_state.json`
+        - `--output-csv` `sharpcap_final_focus.csv`
+        - chart file: `sharpcap_focus_temperature.png`
+        - chart title: *Focuser Position vs Temperature — Main tube C8*
+    - `guide` — 50ED + ASI224MC, ~335 000 steps:
+        - `--min-position` 330 000 / `--max-position` 340 000
+        - `--output-state-json` `sharpcap_focus_state_guide.json`
+        - `--output-csv` `sharpcap_final_focus_guide.csv`
+        - chart file: `sharpcap_focus_temperature_guide.png`
+        - chart title: *Focuser Position vs Temperature — Guide tube 50ED*
+- `TUBE_DEFAULTS` dict: consolidates all per-tube default values in one place.
+- Chart title now includes the tube label (`tube_label` parameter passed to
+  `create_chart()`).
 - README: *Sister repository* section added, documenting the sibling-directory
   relationship with `sharpcap-focus-sequencer` and the canonical two-repository
   layout. `<any-parent>\` is used instead of a hardcoded absolute path to reflect
@@ -18,6 +36,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `parse_arguments()`: `--min-position`, `--max-position`, `--x-min`, `--x-max`,
+  `--output-csv`, and `--output-state-json` now default to `None`; their effective
+  values are resolved from `TUBE_DEFAULTS[args.tube]` in `main()` unless explicitly
+  overridden on the command line.
+- `main()`: per-tube default resolution added before path construction.
+- `create_chart()`: new `tube_label` parameter added; chart title updated to
+  `f"Focuser Position vs Temperature — {tube_label}"`.
+- Outliers CSV name now derived from the main CSV stem for consistency:
+  `sharpcap_removed_outliers.csv` (main) / `sharpcap_removed_outliers_guide.csv` (guide).
 - `.gitignore`: `sharpcap_final_focus.csv`, `sharpcap_removed_outliers.csv`, and
   `sharpcap_focus_temperature.png` are now ignored. These files are regenerated on
   every run and should not be tracked by git.
