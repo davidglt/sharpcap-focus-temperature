@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-30
+
+### Added
+
+- Added synthetic focus datasets for both supported optical tubes:
+  `sharpcap_synthetic_data_focus.csv` for the C8 main tube and
+  `sharpcap_synthetic_data_focus_guide.csv` for the 50ED guide tube.
+- Synthetic datasets are loaded automatically when present beside their
+  corresponding output CSV.
+- Added a `Synthetic` yes/no column to the removed-outliers CSV so
+  expelled synthetic samples are clearly identified.
+- Added a dedicated README section, "Synthetic data (Bayesian prior)",
+  including the guide-tube example table and operational behaviour.
+
+### Changed
+
+- Renamed generated focus-data CSVs from `sharpcap_final_focus*` to
+  `sharpcap_data_focus*` for both tubes.
+- Updated synthetic datasets to cover representative Madrid night
+  temperatures, including summer values up to 34 ºC (July) and 30 ºC
+  (August).
+- Tuned synthetic reference models to -30 steps/ºC (C8) and
+  -1000 steps/ºC (50ED guide tube).
+- Synthetic focus samples now participate in studentized-residual
+  outlier filtering under the same rules as real autofocus samples.
+- Updated chart focus-table ordering so `Autofocus pts` follows
+  `Delta focus`.
+- Updated chart legend and focus table to display real autofocus point
+  counts correctly.
+- Runtime-generated data, chart, state, and outlier files remain
+  excluded from version control through `.gitignore`.
+
+### Fixed
+
+- Corrected the 50ED guide-tube operating range to 315 000–365 000
+  focuser steps throughout code (`TUBE_DEFAULTS`), module docstring,
+  `--tube` help text, README tube table, and README note.
+- Corrected synthetic-point counting to use surviving samples after
+  outlier filtering.
+- Added validation for invalid minimum/maximum position range arguments.
+- Added focus-position range check to catch out-of-range EAF positions.
+- Improved dry-run documentation: clarified that dry-run skips the
+  state-JSON refresh.
+- Added temperature-coefficient sign note and slope/inverse-coefficient
+  consistency guidance to the docstring.
+- Fixed minor PEP 8 indentation issues.
+
 ## [1.3.2] - 2026-08-30
 
 ### Fixed
@@ -114,7 +161,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--log-path` argument for custom SharpCap log folder.
 - `--output-csv` argument for custom output CSV path.
 
-[Unreleased]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.3.2...HEAD
+[Unreleased]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.3.2...v1.4.0
 [1.3.2]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.2.0...v1.3.0
