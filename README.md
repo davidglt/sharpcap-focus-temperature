@@ -26,7 +26,7 @@ Supports two optical tubes via `--tube {main,guide}`:
 - Filters data by the last N natural calendar days.
 - Optionally removes outliers using externally studentized residuals.
 - Fits a linear regression between temperature and focuser position.
-- Calculates the inverse slope as **TCF** (temperature compensation factor).
+- Calculates the inverse slope as **TCF** (temperature compensation factor, in steps/°C).
 - Predicts focuser position for a target temperature.
 - Exports cleaned results to CSV.
 - Exports removed outliers to a separate CSV.
@@ -67,16 +67,22 @@ Where:
 
 - `T` = Temperature (°C)
 - `s` = Focuser Steps
-- `k` = slope in °C/step
-- `TCF = 1/k` = temperature compensation factor in step/°C
+- `k` = slope in °C/step (called `slope` in the source code)
+- `TCF = 1/k` = temperature compensation factor in steps/°C (called `inverse_slope` in the source code)
 - `b` = intercept in °C
+
+> **Note on TCF sign:** for the C8 + F/6.3 reducer and the 50ED, the TCF is
+> **negative** (focus moves inward — fewer steps — as temperature rises).
+> Typical values: main tube ~−62 steps/°C, guide tube ~−850 steps/°C.
+> A positive TCF would mean the focuser needs to move outward as it warms up,
+> which is uncommon for these optical designs.
 
 ## Synthetic data (Bayesian prior)
 
 When real autofocus observations are scarce — especially at the start of a new
 season or for a newly commissioned tube — the regression model can be anchored
 with **synthetic data**: a set of plausible focuser-position/temperature pairs
-derived from prior knowledge of the optical tube's thermal behaviour.
+derived from prior knowledge of the optical tube’s thermal behaviour.
 
 Synthetic points act as a **weak Bayesian prior**: they constrain the regression
 slope and intercept while real data is accumulating, and they are gradually
@@ -119,7 +125,7 @@ DateTime,TemperatureC,FocuserSteps
 
 Synthetic points should include a small random scatter (σ ≈ 500–1 000 steps)
 around the expected regression line. A perfectly collinear set of synthetic
-points compresses the model's residual variance artificially, which can cause
+points compresses the model’s residual variance artificially, which can cause
 real observations that lie slightly off the line to be incorrectly flagged as
 outliers by the studentized residual filter.
 
@@ -166,8 +172,8 @@ focus reference:
   "focus_ref": 25342,
   "last_temp_applied": 18.4,
   "last_focus_applied": 25342,
-  "model_tcf": -42.17,
-  "model_inv_tcf": -0.023712,
+  "model_tcf": -61.59,
+  "model_inv_tcf": -0.016237,
   "model_intercept_c": 889.541
 }
 ```
@@ -179,8 +185,8 @@ focus reference:
 | `focus_ref` | Focuser position (steps) at that reference point. |
 | `last_temp_applied` | Temperature at which the last correction was applied (initially equal to `temp_ref`; can be overwritten by the sequencer at runtime). |
 | `last_focus_applied` | Focuser position of the last applied correction (initially equal to `focus_ref`). |
-| `model_tcf` | TCF = 1/k (steps/°C).  Positive value means focus moves outward as temperature rises. |
-| `model_inv_tcf` | k = slope (°C/step). |
+| `model_tcf` | TCF = 1/k (steps/°C). **Negative for these tubes**: focus moves inward (fewer steps) as temperature rises. |
+| `model_inv_tcf` | k = slope (°C/step). Negative for refractors and most reflectors with focal reducers. |
 | `model_intercept_c` | Regression intercept b (°C). |
 
 > **Note:** `last_temp_applied` and `last_focus_applied` are intentionally
@@ -227,7 +233,7 @@ python -m venv .venv
 .venv\Scripts\pip install -r requirements\requirements.txt
 ```
 
-Always invoke the script through the project's own virtual environment:
+Always invoke the script through the project’s own virtual environment:
 
 ```bash
 .venv\Scripts\python.exe sharpcap_focuser.py
@@ -351,7 +357,7 @@ is silently skipped.
 
 > **Note on synthetic data and outlier filtering:** synthetic points are evaluated
 > by the same studentized residual threshold as real observations. However, to
-> avoid artificially compressing the model's residual variance, synthetic points
+> avoid artificially compressing the model’s residual variance, synthetic points
 > should include realistic scatter (σ ≈ 500–1 000 steps). A perfectly collinear
 > synthetic set would make the model overly sensitive and could incorrectly flag
 > valid real observations as outliers.
@@ -377,7 +383,8 @@ This is used automatically unless `--log-path` is specified.
 5. The sibling [sharpcap-focus-sequencer](https://github.com/davidglt/sharpcap-focus-sequencer)
    reads the appropriate state JSON and applies temperature-based corrections
    automatically during each nightly session, refreshing the model before every
-   correction cycle.
+   correction cycle (live mode only; `--dry-run` uses the previously written
+   state without refreshing it from logs).
 6. Repeat after collecting more sessions to refine the regression.
 
 ## License
