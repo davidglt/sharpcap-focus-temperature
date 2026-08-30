@@ -98,3 +98,7 @@ sharpcap_focus_state_guide.json
 sharpcap_data_focus_guide.csv
 sharpcap_removed_outliers_guide.csv
 sharpcap_focus_temperature_guide.png
+
+# Synthetic data files — example files are tracked once; local overrides are ignored afterwards
+sharpcap_synthetic_data_focus.csv
+sharpcap_synthetic_data_focus_guide.csv

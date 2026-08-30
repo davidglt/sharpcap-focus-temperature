@@ -7,16 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Automatic synthetic-data detection by convention:
+  - `sharpcap_data_focus.csv`       → `sharpcap_synthetic_data_focus.csv`
+  - `sharpcap_data_focus_guide.csv` → `sharpcap_synthetic_data_focus_guide.csv`
+- `sharpcap_synthetic_data_focus.csv`: example synthetic dataset for the
+  main tube (C8), covering a full annual temperature cycle.
+- `sharpcap_synthetic_data_focus_guide.csv`: example synthetic dataset for
+  the guide tube (50ED), covering a full annual temperature cycle.
+- Synthetic points are plotted in **green squares** with a dedicated legend
+  entry showing the point count.
+- Console message when a synthetic CSV is detected and loaded.
+
 ### Changed
+
+- Synthetic data no longer uses a command-line parameter; if the matching
+  synthetic CSV exists, it is applied automatically, otherwise it is ignored.
+- Outlier filter (`filter_outliers_studentized`) skips rows flagged as
+  synthetic (`_synthetic=True`) unconditionally — they can never be removed.
+- Output CSV (`sharpcap_data_focus[_guide].csv`) contains only real cleaned
+  data; synthetic rows are never written to it.
+- State JSON reference (`focus_ref`, `temp_ref`, `timestamp_ref`) is always
+  derived from the last **real** autofocus point, not a synthetic one.
+- Regression uses all combined points (real + synthetic) so synthetic data
+  influences the model permanently.
+- `.gitignore` updated: `sharpcap_synthetic_data_focus*.csv` added so local
+  production overrides are never accidentally committed.
+
+### Fixed
 
 - CSV output file names renamed for clarity:
     - `sharpcap_final_focus.csv`       → `sharpcap_data_focus.csv`
     - `sharpcap_final_focus_guide.csv` → `sharpcap_data_focus_guide.csv`
   Updated in `TUBE_DEFAULTS`, `main()` (outliers CSV stem derivation),
   README output tables, and CHANGELOG.
-
-### Fixed
-
 - `TUBE_DEFAULTS` guide tube: position range widened from 330 000–340 000 to
   320 000–360 000 steps (`min_position`, `max_position`, `x_min`, `x_max`).
 
