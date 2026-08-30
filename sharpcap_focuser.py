@@ -369,6 +369,7 @@ def create_chart(
   auto_axis: bool,
   tube_label: str,
   synthetic_count: int,
+  real_count: int,
 ):
   import matplotlib
   matplotlib.use("Agg")
@@ -475,14 +476,15 @@ def create_chart(
     ax.set_xlim(x_min, x_max)
     ax.set_ylim(y_min, y_max)
 
+  # Legend — show point counts for autofocus results and removed outliers
   handles = [scatter]
-  labels = ["Autofocus results"]
+  labels = [f"Autofocus results ({real_count} pts)"]
   if synth_scatter is not None:
     handles.append(synth_scatter)
     labels.append(f"Synthetic data ({synthetic_count} pts)")
   if outlier_scatter is not None:
     handles.append(outlier_scatter)
-    labels.append("Removed outliers")
+    labels.append(f"Removed outliers ({len(removed_outliers)} pts)")
   if solid_line is not None:
     handles.append(solid_line)
     labels.append("Regression line (measured range)")
@@ -520,7 +522,8 @@ def create_chart(
   if predicted_steps_rounded is not None:
     model_rows.append(["Focus(T)", f"{predicted_steps_rounded} steps"])
 
-  focus_rows = []
+  # Focus table — real pts first, then positional data, then diagnostics
+  focus_rows = [["Real pts", str(real_count)]]
   if first_focus is not None:
     focus_rows.append(["First focus", f"{first_focus} steps"])
   if last_focus is not None:
@@ -644,6 +647,7 @@ def main():
       combined, removed_outliers, chart_path, args.predict_temperature,
       args.studentized_threshold, remove_outliers, x_min, x_max,
       args.y_min, args.y_max, args.auto_axis, tube_label, synthetic_count,
+      real_count=len(real_clean),
     )
 
     if slope is not None and intercept is not None:
