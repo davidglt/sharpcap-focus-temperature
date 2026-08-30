@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `TUBE_DEFAULTS` guide tube: position range widened from 330 000–340 000 to
+  320 000–360 000 steps (`min_position`, `max_position`, `x_min`, `x_max`).
+
 ## [1.2.0] - 2026-08-30
 
 ### Added
