@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
         - chart file: `sharpcap_focus_temperature.png`
         - chart title: *Focuser Position vs Temperature — Main tube C8*
     - `guide` — 50ED + ASI224MC, ~335 000 steps:
-        - `--min-position` 330 000 / `--max-position` 340 000
+        - `--min-position` 320 000 / `--max-position` 360 000
         - `--output-state-json` `sharpcap_focus_state_guide.json`
         - `--output-csv` `sharpcap_final_focus_guide.csv`
         - chart file: `sharpcap_focus_temperature_guide.png`
