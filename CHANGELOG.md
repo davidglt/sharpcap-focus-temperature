@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- CSV output file names renamed for clarity:
+    - `sharpcap_final_focus.csv`       → `sharpcap_data_focus.csv`
+    - `sharpcap_final_focus_guide.csv` → `sharpcap_data_focus_guide.csv`
+  Updated in `TUBE_DEFAULTS`, `main()` (outliers CSV stem derivation),
+  README output tables, and CHANGELOG.
+
 ### Fixed
 
 - `TUBE_DEFAULTS` guide tube: position range widened from 330 000–340 000 to
@@ -22,13 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `main`  (default) — C8 + ASI2600MC Pro, ~25 000 steps:
         - `--min-position` 24 000 / `--max-position` 27 000
         - `--output-state-json` `sharpcap_focus_state.json`
-        - `--output-csv` `sharpcap_final_focus.csv`
+        - `--output-csv` `sharpcap_data_focus.csv`
         - chart file: `sharpcap_focus_temperature.png`
         - chart title: *Focuser Position vs Temperature — Main tube C8*
     - `guide` — 50ED + ASI224MC, ~335 000 steps:
         - `--min-position` 320 000 / `--max-position` 360 000
         - `--output-state-json` `sharpcap_focus_state_guide.json`
-        - `--output-csv` `sharpcap_final_focus_guide.csv`
+        - `--output-csv` `sharpcap_data_focus_guide.csv`
         - chart file: `sharpcap_focus_temperature_guide.png`
         - chart title: *Focuser Position vs Temperature — Guide tube 50ED*
 - `TUBE_DEFAULTS` dict: consolidates all per-tube default values in one place.
@@ -52,7 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `f"Focuser Position vs Temperature — {tube_label}"`.
 - Outliers CSV name now derived from the main CSV stem for consistency:
   `sharpcap_removed_outliers.csv` (main) / `sharpcap_removed_outliers_guide.csv` (guide).
-- `.gitignore`: `sharpcap_final_focus.csv`, `sharpcap_removed_outliers.csv`, and
+- `.gitignore`: `sharpcap_data_focus.csv`, `sharpcap_removed_outliers.csv`, and
   `sharpcap_focus_temperature.png` are now ignored. These files are regenerated on
   every run and should not be tracked by git.
 
@@ -95,7 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reads SharpCap autofocus log files and extracts focus/temperature pairs.
 - Removes outliers using studentised residuals (statsmodels).
 - Fits a linear regression model (focus vs. temperature).
-- Generates `sharpcap_final_focus.csv` and `sharpcap_removed_outliers.csv`.
+- Generates `sharpcap_data_focus.csv` and `sharpcap_removed_outliers.csv`.
 - Generates `sharpcap_focus_temperature.png` — scatter plot with regression line.
 - `--predict-temperature` option: predicts the focus position for a given temperature.
 - `--auto-axis` option: automatic axis scaling based on data range.

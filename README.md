@@ -35,7 +35,7 @@ Supports two optical tubes via `--tube {main,guide}`:
 
 | File | Description |
 |---|---|
-| `sharpcap_final_focus.csv` | Filtered autofocus results. |
+| `sharpcap_data_focus.csv` | Filtered autofocus results. |
 | `sharpcap_removed_outliers.csv` | Removed outliers with studentized residual diagnostics. |
 | `sharpcap_focus_temperature.png` | Plot with regression line, prediction marker, and summary tables. |
 | `sharpcap_focus_state.json` | Last valid autofocus reference plus the fitted thermal model. |
@@ -44,7 +44,7 @@ Supports two optical tubes via `--tube {main,guide}`:
 
 | File | Description |
 |---|---|
-| `sharpcap_final_focus_guide.csv` | Filtered autofocus results. |
+| `sharpcap_data_focus_guide.csv` | Filtered autofocus results. |
 | `sharpcap_removed_outliers_guide.csv` | Removed outliers with studentized residual diagnostics. |
 | `sharpcap_focus_temperature_guide.png` | Plot with regression line, prediction marker, and summary tables. |
 | `sharpcap_focus_state_guide.json` | Last valid autofocus reference plus the fitted thermal model. |

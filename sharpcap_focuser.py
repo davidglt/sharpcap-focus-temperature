@@ -65,7 +65,7 @@ TUBE_DEFAULTS = {
         "max_position":   27000,
         "x_min":          24000.0,
         "x_max":          27000.0,
-        "output_csv":     "sharpcap_final_focus.csv",
+        "output_csv":     "sharpcap_data_focus.csv",
         "output_state":   "sharpcap_focus_state.json",
         "chart_name":     "sharpcap_focus_temperature.png",
     },
@@ -75,7 +75,7 @@ TUBE_DEFAULTS = {
         "max_position":   360000,
         "x_min":          320000.0,
         "x_max":          360000.0,
-        "output_csv":     "sharpcap_final_focus_guide.csv",
+        "output_csv":     "sharpcap_data_focus_guide.csv",
         "output_state":   "sharpcap_focus_state_guide.json",
         "chart_name":     "sharpcap_focus_temperature_guide.png",
     },
@@ -719,7 +719,7 @@ def main():
   log_path   = Path(args.log_path)
   output_csv = Path(output_csv_name).resolve()
   outliers_csv = output_csv.with_name(
-      output_csv.stem.replace("sharpcap_final_focus", "sharpcap_removed_outliers")
+      output_csv.stem.replace("sharpcap_data_focus", "sharpcap_removed_outliers")
       + output_csv.suffix
   )
   chart_path = output_csv.with_name(td["chart_name"])
