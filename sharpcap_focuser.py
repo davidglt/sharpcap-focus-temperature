@@ -171,7 +171,7 @@ def parse_arguments():
     "--predict-temperature",
     type=float,
     default=None,
-    help="Predict focuser position for this temperature in ºC.",
+    help="Predict focuser position for this temperature in \u00baC.",
   )
   parser.add_argument(
     "--no-remove-outliers",
@@ -522,14 +522,15 @@ def create_chart(
   if predicted_steps_rounded is not None:
     model_rows.append(["Focus(T)", f"{predicted_steps_rounded} steps"])
 
-  # Focus table — real pts first, then positional data, then diagnostics
-  focus_rows = [["Real pts", str(real_count)]]
+  # Focus table — First/Last/Delta focus, then Autofocus pts, then Synthetic pts, then diagnostics
+  focus_rows = []
   if first_focus is not None:
     focus_rows.append(["First focus", f"{first_focus} steps"])
   if last_focus is not None:
     focus_rows.append(["Last focus", f"{last_focus} steps"])
   if focus_span_steps is not None:
     focus_rows.append(["Delta focus", f"{focus_span_steps:+d} steps"])
+  focus_rows.append(["Autofocus pts", str(real_count)])
   if synthetic_count > 0:
     focus_rows.append(["Synthetic pts", str(synthetic_count)])
   if outlier_mode_enabled:
