@@ -87,14 +87,3 @@ site/
 .DS_Store
 Thumbs.db
 
-# Runtime artifacts produced by sharpcap_focuser.py — not committed
-# Main tube (C8 + ASI2600MC Pro)
-sharpcap_focus_state.json
-sharpcap_data_focus.csv
-sharpcap_removed_outliers.csv
-sharpcap_focus_temperature.png
-# Guide tube (50ED + ASI224MC)
-sharpcap_focus_state_guide.json
-sharpcap_data_focus_guide.csv
-sharpcap_removed_outliers_guide.csv
-sharpcap_focus_temperature_guide.png
