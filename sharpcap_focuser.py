@@ -23,13 +23,17 @@ Features
 - Generates a chart with regression and two side summary tables.
 - Supports two optical tubes via --tube {main,guide}:
     main  — C8 + ASI2600MC Pro  (~25 000 steps, state JSON: sharpcap_focus_state.json)
-    guide — 50ED + ASI224MC     (~345 000 steps, state JSON: sharpcap_focus_state_guide.json)
+    guide — 50ED + ASI224MC     (~347 000 steps, state JSON: sharpcap_focus_state_guide.json)
 - Automatically loads synthetic data if a matching CSV exists beside the output CSV.
   Synthetic points are:
     * merged with real data before regression.
-    * immune to outlier removal.
+    * evaluated with the same studentized residual threshold as real points;
+      they can be removed as outliers if real data grows enough to push them
+      out of the model (acting as a Bayesian prior that fades naturally).
     * plotted in green with a distinct legend entry.
     * excluded from the output CSV and from the state JSON reference.
+    * flagged as 'yes' in the Synthetic column of the removed-outliers CSV
+      if they are expelled.
 
 Author
 ------
@@ -74,9 +78,9 @@ TUBE_DEFAULTS = {
     },
     "guide": {
         "label": "Guide tube 50ED",
-        "min_position": 325000,
+        "min_position": 315000,
         "max_position": 365000,
-        "x_min": 325000.0,
+        "x_min": 315000.0,
         "x_max": 365000.0,
         "output_csv": "sharpcap_data_focus_guide.csv",
         "output_state": "sharpcap_focus_state_guide.json",
@@ -97,7 +101,7 @@ def parse_arguments():
       "Optical tube to analyse. Selects per-tube defaults for position "
       "range, output file names, and chart title. "
       "'main' = C8 + ASI2600MC Pro (~25 000 steps). "
-      "'guide' = 50ED + ASI224MC (~345 000 steps). "
+      "'guide' = 50ED + ASI224MC (~347 000 steps). "
       "Individual flags (--min-position, --output-state-json, etc.) "
       "always override the tube defaults. Default: main"
     ),
@@ -299,11 +303,9 @@ def filter_outliers_studentized(results, threshold: float):
   filtered = []
   removed = []
   for row, residual in zip(results, studentized):
-    if row.get("_synthetic"):
-      filtered.append(row)
-      continue
     row_with_diagnostic = row.copy()
     row_with_diagnostic["StudentizedResidual"] = round(float(residual), 3)
+    row_with_diagnostic["Synthetic"] = "yes" if row.get("_synthetic") else "no"
     if abs(residual) > threshold:
       row_with_diagnostic["Reason"] = f"Studentized residual > {threshold:.1f}"
       removed.append(row_with_diagnostic)
@@ -314,7 +316,7 @@ def filter_outliers_studentized(results, threshold: float):
 
 def write_csv(results, output_csv: Path, fieldnames):
   with output_csv.open("w", newline="", encoding="utf-8") as handle:
-    writer = csv.DictWriter(handle, fieldnames=fieldnames)
+    writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(results)
 
@@ -609,7 +611,7 @@ def main():
     write_csv(
       removed_outliers,
       outliers_csv,
-      ["DateTime", "TemperatureC", "FocuserSteps", "StudentizedResidual", "Reason"],
+      ["DateTime", "TemperatureC", "FocuserSteps", "StudentizedResidual", "Synthetic", "Reason"],
     )
     print(f"Outliers CSV created: {outliers_csv}")
     print(f"Outliers written: {len(removed_outliers)}")
