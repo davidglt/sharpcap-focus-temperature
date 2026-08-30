@@ -175,7 +175,7 @@ Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 Install dependencies with:
 
 ```bash
-pip install numpy matplotlib statsmodels
+pip install -r requirements\requirements.txt
 ```
 
 ## Usage
