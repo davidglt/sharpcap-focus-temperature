@@ -23,7 +23,7 @@ Features
 - Generates a chart with regression and two side summary tables.
 - Supports two optical tubes via --tube {main,guide}:
     main  — C8 + ASI2600MC Pro  (~25 000 steps, state JSON: sharpcap_focus_state.json)
-    guide — 50ED + ASI224MC     (~335 000 steps, state JSON: sharpcap_focus_state_guide.json)
+    guide — 50ED + ASI224MC     (~350 000 steps, state JSON: sharpcap_focus_state_guide.json)
 - Automatically loads synthetic data if a matching CSV exists beside the output CSV.
   Synthetic points are:
     * merged with real data before regression.
@@ -74,10 +74,10 @@ TUBE_DEFAULTS = {
     },
     "guide": {
         "label": "Guide tube 50ED",
-        "min_position": 320000,
-        "max_position": 360000,
-        "x_min": 320000.0,
-        "x_max": 360000.0,
+        "min_position": 330000,
+        "max_position": 370000,
+        "x_min": 330000.0,
+        "x_max": 370000.0,
         "output_csv": "sharpcap_data_focus_guide.csv",
         "output_state": "sharpcap_focus_state_guide.json",
         "chart_name": "sharpcap_focus_temperature_guide.png",
@@ -97,7 +97,7 @@ def parse_arguments():
       "Optical tube to analyse. Selects per-tube defaults for position "
       "range, output file names, and chart title. "
       "'main' = C8 + ASI2600MC Pro (~25 000 steps). "
-      "'guide' = 50ED + ASI224MC (~335 000 steps). "
+      "'guide' = 50ED + ASI224MC (~350 000 steps). "
       "Individual flags (--min-position, --output-state-json, etc.) "
       "always override the tube defaults. Default: main"
     ),
