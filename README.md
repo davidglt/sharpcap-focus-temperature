@@ -10,11 +10,11 @@ Supports two optical tubes via `--tube {main,guide}`:
 | Tube | Hardware | EAF position range | Typical position | State JSON |
 |---|---|---|---|---|
 | `main` (default) | C8 + ASI2600MC Pro | 24 000 – 27 000 steps | ~25 000 | `sharpcap_focus_state.json` |
-| `guide` | 50ED + ASI224MC | 325 000 – 365 000 steps | ~345 000 | `sharpcap_focus_state_guide.json` |
+| `guide` | 50ED + ASI224MC | 315 000 – 365 000 steps | ~347 000 | `sharpcap_focus_state_guide.json` |
 
 > **Note on guide tube range:** the 50ED EAF (ASCOM.EAF_2.Focuser) is configured
 > with **Max Steps = 520 000** in ASICap → Focuser → Advanced, but autofocus
-> results during normal operation fall in the 325 000 – 365 000 step window.
+> results during normal operation fall in the 315 000 – 365 000 step window.
 > Use `--min-position` / `--max-position` to override these defaults if your
 > setup differs.
 
@@ -70,6 +70,88 @@ Where:
 - `k` = slope in °C/step
 - `TCF = 1/k` = temperature compensation factor in step/°C
 - `b` = intercept in °C
+
+## Synthetic data (Bayesian prior)
+
+When real autofocus observations are scarce — especially at the start of a new
+season or for a newly commissioned tube — the regression model can be anchored
+with **synthetic data**: a set of plausible focuser-position/temperature pairs
+derived from prior knowledge of the optical tube's thermal behaviour.
+
+Synthetic points act as a **weak Bayesian prior**: they constrain the regression
+slope and intercept while real data is accumulating, and they are gradually
+outnumbered and overridden as more real observations are collected.
+
+### File naming convention
+
+Place the synthetic CSV **in the same folder** as the output CSV, using the
+following names:
+
+| Tube | Synthetic CSV |
+|---|---|
+| `main` | `sharpcap_synthetic_data_focus.csv` |
+| `guide` | `sharpcap_synthetic_data_focus_guide.csv` |
+
+The script detects these files automatically at runtime — no flag is needed.
+
+### CSV format
+
+The synthetic CSV must have the same three columns as the real data CSV:
+
+```text
+DateTime,TemperatureC,FocuserSteps
+```
+
+### Behaviour
+
+- Synthetic points are **merged with real data** before regression.
+- They are **evaluated by the same outlier filter** as real points: if enough
+  real data accumulates to push a synthetic point beyond the studentized
+  residual threshold, it is expelled automatically, letting real observations
+  dominate the model naturally.
+- They are **plotted in green** with a distinct legend entry (*Synthetic data*).
+- They are **excluded from the output CSV** (`sharpcap_data_focus*.csv`) and
+  from the state JSON reference — only real measurements are written there.
+- If a synthetic point is expelled as an outlier, it appears in the
+  removed-outliers CSV with `Synthetic = yes`.
+
+### Realistic variance
+
+Synthetic points should include a small random scatter (σ ≈ 500–1 000 steps)
+around the expected regression line. A perfectly collinear set of synthetic
+points compresses the model's residual variance artificially, which can cause
+real observations that lie slightly off the line to be incorrectly flagged as
+outliers by the studentized residual filter.
+
+### Example — guide tube (50ED + ASI224MC)
+
+The following table covers one representative observation per month across the
+full temperature range of the site, with ±800-step Gaussian noise added to each
+point to simulate realistic EAF scatter:
+
+```csv
+DateTime,TemperatureC,FocuserSteps
+2026-01-01 22:00:00,3.5,358745
+2026-02-01 21:30:00,4.5,357235
+2026-03-01 22:00:00,8.5,353851
+2026-04-01 21:00:00,11.0,352043
+2026-05-01 22:00:00,14.5,347128
+2026-06-01 22:00:00,21.0,340608
+2026-07-01 23:00:00,34.0,329019
+2026-08-01 22:30:00,30.0,332381
+2026-09-01 21:00:00,17.0,344432
+2026-10-01 20:00:00,12.0,350256
+2026-11-01 19:00:00,7.0,354467
+2026-12-01 19:00:00,4.0,357474
+```
+
+Copy this table into `sharpcap_synthetic_data_focus_guide.csv` (alongside
+`sharpcap_data_focus_guide.csv`) to bootstrap the guide tube model before
+collecting enough real sessions.
+
+> **Delete or empty the synthetic CSV** once you have accumulated 15–20 real
+> autofocus results that cover the seasonal temperature range. At that point the
+> real data is sufficient to fit a reliable model on its own.
 
 ## JSON state file
 
@@ -236,7 +318,7 @@ python sharpcap_focuser.py \
 
 | Option | Default | Description |
 |---|---|---|
-| `--tube` | `main` | Tube to analyse: `main` (C8 + ASI2600MC Pro, 24 000–27 000 steps) or `guide` (50ED + ASI224MC, 325 000–365 000 steps). Selects per-tube defaults for position range and output file names. |
+| `--tube` | `main` | Tube to analyse: `main` (C8 + ASI2600MC Pro, 24 000–27 000 steps) or `guide` (50ED + ASI224MC, 315 000–365 000 steps). Selects per-tube defaults for position range and output file names. |
 | `--log-path` | SharpCap logs folder | SharpCap log folder path. |
 | `--output-csv` | per tube | Output CSV file path. |
 | `--output-state-json` | per tube | Output JSON file with last valid autofocus reference and regression model. |
@@ -266,6 +348,13 @@ Default threshold:
 
 Requires at least 5 data points to activate; if fewer are available the filter
 is silently skipped.
+
+> **Note on synthetic data and outlier filtering:** synthetic points are evaluated
+> by the same studentized residual threshold as real observations. However, to
+> avoid artificially compressing the model's residual variance, synthetic points
+> should include realistic scatter (σ ≈ 500–1 000 steps). A perfectly collinear
+> synthetic set would make the model overly sensitive and could incorrectly flag
+> valid real observations as outliers.
 
 ## SharpCap log location
 
