@@ -11,49 +11,40 @@ focuser range, optionally remove outliers using externally studentized
 residuals, export the cleaned dataset to CSV, and generate a publication-ready
 chart with regression, prediction, legend, and summary tables.
 
+Focus configuration
+-------------------
+Per-tube focus references and analysis intervals can be stored in the optional
+focus_config.properties file beside this script. Copy
+focus_config.properties.example to focus_config.properties and set:
+
+    [main]
+    focus_center = 18700
+    focus_range = 3000
+
+The interval is calculated automatically:
+
+    min_position = focus_center - focus_range / 2
+    max_position = focus_center + focus_range / 2
+
+Command-line flags override the local configuration for one execution.
+
 Features
 --------
 - Parses SharpCap log files and extracts autofocus results.
 - Filters results by calendar days and focuser step range.
-- Optionally removes outliers using studentized residuals.
+- Loads optional per-tube focus configuration from a .properties file.
+- Supports temporary --focus-center and --focus-range CLI overrides.
+- Optionally removes outliers using externally studentized residuals.
 - Fits a linear regression between focuser position and temperature.
 - Predicts focuser position for a target temperature.
 - Exports cleaned results and removed outliers to CSV.
 - Exports last valid autofocus reference and regression model to JSON.
 - Generates a chart with regression and two side summary tables.
-- Supports two optical tubes via --tube {main,guide}:
-    main  — C8 + ASI2600MC Pro  (~25 000 steps, state JSON: sharpcap_focus_state.json)
-    guide — 50ED + ASI224MC     (~347 000 steps, state JSON: sharpcap_focus_state_guide.json)
-- Automatically loads synthetic data if a matching CSV exists beside the output CSV.
-  Synthetic points are:
-    * merged with real data before regression.
-    * evaluated with the same studentized residual threshold as real points;
-      they can be removed as outliers if real data grows enough to push them
-      out of the model (acting as a Bayesian prior that fades naturally).
-    * plotted in green with a distinct legend entry.
-    * excluded from the output CSV and from the state JSON reference.
-    * flagged as 'yes' in the Synthetic column of the removed-outliers CSV
-      if they are expelled.
-
-Author
-------
-David Gonzalez Lopez-Tercero
-
-Contact
--------
-Email: davidglt@dragonit.es
-Website: https://dragonit.es
-
-Date
-----
-2026-08-30
-
-License
--------
-GPL-3.0-or-later
+- Supports two optical tubes via --tube {main,guide}.
 """
 
 import argparse
+import configparser
 import csv
 import json
 import math
@@ -64,24 +55,21 @@ from pathlib import Path
 
 DEG_C_CHART = "\u00B0C"
 DEG_C_CONSOLE = "\u00BAC"
+CONFIG_FILENAME = "focus_config.properties"
 
 TUBE_DEFAULTS = {
     "main": {
         "label": "Main tube C8",
-        "min_position": 24000,
-        "max_position": 27000,
-        "x_min": 24000.0,
-        "x_max": 27000.0,
+        "focus_center": 18700,
+        "focus_range": 3000,
         "output_csv": "sharpcap_data_focus.csv",
         "output_state": "sharpcap_focus_state.json",
         "chart_name": "sharpcap_focus_temperature.png",
     },
     "guide": {
         "label": "Guide tube 50ED",
-        "min_position": 315000,
-        "max_position": 365000,
-        "x_min": 315000.0,
-        "x_max": 365000.0,
+        "focus_center": 347000,
+        "focus_range": 50000,
         "output_csv": "sharpcap_data_focus_guide.csv",
         "output_state": "sharpcap_focus_state_guide.json",
         "chart_name": "sharpcap_focus_temperature_guide.png",
@@ -98,12 +86,17 @@ def parse_arguments():
         choices=["main", "guide"],
         default="main",
         help=(
-            "Optical tube to analyse. Selects per-tube defaults for position "
-            "range, output file names, and chart title. "
-            "'main' = C8 + ASI2600MC Pro (~25 000 steps). "
-            "'guide' = 50ED + ASI224MC (~347 000 steps). "
-            "Individual flags (--min-position, --output-state-json, etc.) "
-            "always override the tube defaults. Default: main"
+            "Optical tube to analyse. Selects per-tube focus configuration, "
+            "output file names, and chart title. Default: main."
+        ),
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help=(
+            "Path to focus configuration .properties file. Default: "
+            "focus_config.properties beside this script."
         ),
     )
     parser.add_argument(
@@ -128,25 +121,55 @@ def parse_arguments():
         "--min-position",
         type=int,
         default=None,
-        help="Minimum focuser position to keep. Default depends on --tube.",
+        help=(
+            "Minimum focuser position to keep. Must be used with "
+            "--max-position. Overrides configuration for one execution."
+        ),
     )
     parser.add_argument(
         "--max-position",
         type=int,
         default=None,
-        help="Maximum focuser position to keep. Default depends on --tube.",
+        help=(
+            "Maximum focuser position to keep. Must be used with "
+            "--min-position. Overrides configuration for one execution."
+        ),
+    )
+    parser.add_argument(
+        "--focus-center",
+        type=int,
+        default=None,
+        help=(
+            "Temporarily centre the focuser interval on this position. "
+            "Uses the configured interval width unless --focus-range is given."
+        ),
+    )
+    parser.add_argument(
+        "--focus-range",
+        type=int,
+        default=None,
+        help=(
+            "Temporary total interval width in steps. Requires --focus-center. "
+            "Must be a positive even integer."
+        ),
     )
     parser.add_argument(
         "--x-min",
         type=float,
         default=None,
-        help="Minimum X axis limit. Default depends on --tube.",
+        help=(
+            "Minimum X-axis limit. Must be used with --x-max. "
+            "Overrides calculated range for the chart only."
+        ),
     )
     parser.add_argument(
         "--x-max",
         type=float,
         default=None,
-        help="Maximum X axis limit. Default depends on --tube.",
+        help=(
+            "Maximum X-axis limit. Must be used with --x-min. "
+            "Overrides calculated range for the chart only."
+        ),
     )
     parser.add_argument(
         "--y-min",
@@ -180,7 +203,10 @@ def parse_arguments():
     parser.add_argument(
         "--no-remove-outliers",
         action="store_true",
-        help="Disable outlier removal. By default, outliers are removed using externally studentized residuals.",
+        help=(
+            "Disable outlier removal. By default, outliers are removed using "
+            "externally studentized residuals."
+        ),
     )
     parser.add_argument(
         "--studentized-threshold",
@@ -189,6 +215,183 @@ def parse_arguments():
         help="Absolute studentized residual threshold. Default: 3.0",
     )
     return parser.parse_args()
+
+
+def validate_center_and_range(focus_center: int, focus_range: int, source: str):
+    if focus_center < 0:
+        raise ValueError(f"{source}: focus_center must not be negative.")
+    if focus_range <= 0 or focus_range % 2 != 0:
+        raise ValueError(
+            f"{source}: focus_range must be a positive even integer."
+        )
+
+    half_range = focus_range // 2
+    min_position = focus_center - half_range
+    max_position = focus_center + half_range
+
+    if min_position < 0:
+        raise ValueError(
+            f"{source}: calculated minimum position must not be negative."
+        )
+
+    return min_position, max_position
+
+
+def get_default_config_path() -> Path:
+    return Path(__file__).resolve().with_name(CONFIG_FILENAME)
+
+
+def load_tube_focus_config(config_path: Path, tube: str, defaults: dict):
+    """Load optional per-tube center/range configuration.
+
+    Missing config files or missing tube sections are non-fatal: built-in
+    defaults are retained. Invalid configured numeric values raise ValueError,
+    so a typo cannot silently contaminate the regression.
+    """
+    values = {
+        "focus_center": defaults["focus_center"],
+        "focus_range": defaults["focus_range"],
+        "source": "built-in defaults",
+    }
+
+    if not config_path.exists():
+        return values
+
+    parser = configparser.ConfigParser()
+    try:
+        with config_path.open("r", encoding="utf-8") as handle:
+            parser.read_file(handle)
+    except (OSError, configparser.Error) as error:
+        raise ValueError(
+            f"Could not read configuration file {config_path}: {error}"
+        ) from error
+
+    if not parser.has_section(tube):
+        return values
+
+    try:
+        if parser.has_option(tube, "focus_center"):
+            values["focus_center"] = parser.getint(tube, "focus_center")
+        if parser.has_option(tube, "focus_range"):
+            values["focus_range"] = parser.getint(tube, "focus_range")
+    except ValueError as error:
+        raise ValueError(
+            f"Invalid numeric focus configuration in [{tube}] "
+            f"of {config_path}: {error}"
+        ) from error
+
+    validate_center_and_range(
+        values["focus_center"],
+        values["focus_range"],
+        f"Configuration [{tube}] in {config_path}",
+    )
+    values["source"] = str(config_path)
+    return values
+
+
+def resolve_focus_interval(args, tube_defaults: dict, config_values: dict):
+    """Resolve filtering and X-axis limits using documented precedence.
+
+    Precedence:
+      1. Explicit --min-position plus --max-position.
+      2. Temporary --focus-center plus optional --focus-range.
+      3. Per-tube focus_config.properties values.
+      4. Built-in TUBE_DEFAULTS values.
+    """
+    manual_min_max = (
+        args.min_position is not None or args.max_position is not None
+    )
+    manual_x_axis = args.x_min is not None or args.x_max is not None
+
+    if manual_min_max and (
+        args.min_position is None or args.max_position is None
+    ):
+        raise ValueError(
+            "--min-position and --max-position must be specified together."
+        )
+
+    if manual_x_axis and (args.x_min is None or args.x_max is None):
+        raise ValueError("--x-min and --x-max must be specified together.")
+
+    if args.focus_range is not None and args.focus_center is None:
+        raise ValueError("--focus-range requires --focus-center.")
+
+    if args.focus_center is not None and manual_min_max:
+        raise ValueError(
+            "--focus-center cannot be combined with --min-position or "
+            "--max-position."
+        )
+
+    if args.focus_center is not None:
+        focus_center = args.focus_center
+        focus_range = (
+            config_values["focus_range"]
+            if args.focus_range is None
+            else args.focus_range
+        )
+        interval_source = "command-line focus center/range override"
+    elif manual_min_max:
+        min_position = args.min_position
+        max_position = args.max_position
+        if min_position >= max_position:
+            raise ValueError(
+                f"--min-position ({min_position}) must be strictly less than "
+                f"--max-position ({max_position})."
+            )
+
+        if manual_x_axis:
+            x_min = args.x_min
+            x_max = args.x_max
+            if x_min >= x_max:
+                raise ValueError(
+                    f"--x-min ({x_min}) must be strictly less than "
+                    f"--x-max ({x_max})."
+                )
+        else:
+            x_min = float(min_position)
+            x_max = float(max_position)
+
+        return {
+            "focus_center": (min_position + max_position) // 2,
+            "focus_range": max_position - min_position,
+            "min_position": min_position,
+            "max_position": max_position,
+            "x_min": x_min,
+            "x_max": x_max,
+            "source": "manual --min-position/--max-position override",
+        }
+    else:
+        focus_center = config_values["focus_center"]
+        focus_range = config_values["focus_range"]
+        interval_source = config_values["source"]
+
+    min_position, max_position = validate_center_and_range(
+        focus_center,
+        focus_range,
+        interval_source,
+    )
+
+    if manual_x_axis:
+        x_min = args.x_min
+        x_max = args.x_max
+        if x_min >= x_max:
+            raise ValueError(
+                f"--x-min ({x_min}) must be strictly less than "
+                f"--x-max ({x_max})."
+            )
+    else:
+        x_min = float(min_position)
+        x_max = float(max_position)
+
+    return {
+        "focus_center": focus_center,
+        "focus_range": focus_range,
+        "min_position": min_position,
+        "max_position": max_position,
+        "x_min": x_min,
+        "x_max": x_max,
+        "source": interval_source,
+    }
 
 
 def get_start_date(last_days: int | None):
@@ -201,26 +404,14 @@ def get_start_date(last_days: int | None):
 
 
 def get_log_files(log_path: Path, start_date):
-    """Return log files whose embedded filename date is >= start_date.
-
-    Files are pre-filtered by st_mtime as a fast first pass, then the date
-    embedded in the filename (Log_YYYY-MM-DDTHH... format) is used as the
-    authoritative filter.  This avoids false negatives when a log file is
-    copied or touched after its original recording date.
-
-    Note: if a log file does not follow the expected naming convention,
-    extract_date_from_filename falls back to st_mtime, so the behaviour
-    is identical to the mtime-only approach for those files.
-    """
     log_files = sorted(log_path.glob("Log_*.log"))
     if start_date is None:
         return log_files
+
     result = []
     for file in log_files:
-        # Fast pre-filter: skip files whose mtime is clearly before the window.
         if datetime.fromtimestamp(file.stat().st_mtime).date() < start_date:
             continue
-        # Authoritative filter: use the date embedded in the filename.
         file_date_str = extract_date_from_filename(file)
         try:
             file_date = datetime.strptime(file_date_str, "%Y-%m-%d").date()
@@ -235,15 +426,21 @@ def extract_date_from_filename(file_path: Path) -> str:
     match = re.search(r"Log_(\d{4}-\d{2}-\d{2})T", file_path.name)
     if match:
         return match.group(1)
-    return datetime.fromtimestamp(file_path.stat().st_mtime).strftime("%Y-%m-%d")
+    return datetime.fromtimestamp(file_path.stat().st_mtime).strftime(
+        "%Y-%m-%d"
+    )
 
 
 def parse_logs(log_files, min_position: int, max_position: int, start_date):
     time_regex = re.compile(
-        r"^(?:Info|Debug|Warning|Error)\s+(?P<time>\d{1,2}:\d{2}:\d{2})(?:\.\d+)?"
+        r"^(?:Info|Debug|Warning|Error)\s+"
+        r"(?P<time>\d{1,2}:\d{2}:\d{2})(?:\.\d+)?"
     )
     autofocus_regex = re.compile(
-        r"Autofocus result\s*:\s*best focus at\s+(?P<position>-?\d+(?:[.,]\d+)?)\s+with focuser temperature of\s+(?P<temperature>-?\d+(?:[.,]\d+)?)\s*C",
+        r"Autofocus result\s*:\s*best focus at\s+"
+        r"(?P<position>-?\d+(?:[.,]\d+)?)\s+"
+        r"with focuser temperature of\s+"
+        r"(?P<temperature>-?\d+(?:[.,]\d+)?)\s*C",
         re.IGNORECASE,
     )
 
@@ -255,19 +452,27 @@ def parse_logs(log_files, min_position: int, max_position: int, start_date):
                 time_match = time_regex.match(line)
                 if not time_match:
                     continue
+
                 autofocus_match = autofocus_regex.search(line)
                 if not autofocus_match:
                     continue
+
                 event_dt = datetime.strptime(
                     f"{log_date} {time_match.group('time')}",
                     "%Y-%m-%d %H:%M:%S",
                 )
                 if start_date is not None and event_dt.date() < start_date:
                     continue
-                position = float(autofocus_match.group("position").replace(",", "."))
+
+                position = float(
+                    autofocus_match.group("position").replace(",", ".")
+                )
                 if position < min_position or position > max_position:
                     continue
-                temperature = float(autofocus_match.group("temperature").replace(",", "."))
+
+                temperature = float(
+                    autofocus_match.group("temperature").replace(",", ".")
+                )
                 results.append(
                     {
                         "DateTime": event_dt.strftime("%Y-%m-%d %H:%M:%S"),
@@ -275,25 +480,28 @@ def parse_logs(log_files, min_position: int, max_position: int, start_date):
                         "FocuserSteps": round(position),
                     }
                 )
+
     results.sort(key=lambda item: item["DateTime"])
     return results
 
 
 def derive_synthetic_csv_path(output_csv: Path) -> Path:
-    name = output_csv.name.replace("sharpcap_data_focus", "sharpcap_synthetic_data_focus")
+    name = output_csv.name.replace(
+        "sharpcap_data_focus",
+        "sharpcap_synthetic_data_focus",
+    )
     return output_csv.with_name(name)
 
 
-def load_synthetic_csv(output_csv: Path, min_position: int, max_position: int) -> list:
-    """Load synthetic data points from the companion CSV file.
-
-    Points whose FocuserSteps fall outside [min_position, max_position] are
-    silently discarded so that a synthetic CSV generated for one tube cannot
-    corrupt the model of the other tube.
-    """
+def load_synthetic_csv(
+    output_csv: Path,
+    min_position: int,
+    max_position: int,
+) -> list:
     path = derive_synthetic_csv_path(output_csv)
     if not path.exists():
         return []
+
     rows = []
     skipped = 0
     with path.open("r", encoding="utf-8") as handle:
@@ -311,11 +519,14 @@ def load_synthetic_csv(output_csv: Path, min_position: int, max_position: int) -
                     "_synthetic": True,
                 }
             )
-    msg = f"Synthetic CSV found: {path} ({len(rows)} points"
+
+    message = f"Synthetic CSV found: {path} ({len(rows)} points"
     if skipped:
-        msg += f", {skipped} skipped — outside [{min_position}, {max_position}]"
-    msg += ")"
-    print(msg)
+        message += (
+            f", {skipped} skipped — outside "
+            f"[{min_position}, {max_position}]"
+        )
+    print(f"{message})")
     return rows
 
 
@@ -326,33 +537,46 @@ def filter_outliers_studentized(results, threshold: float):
     if len(results) < 5:
         return results, [], 0
 
-    x = np.array([row["FocuserSteps"] for row in results], dtype=float)
-    y = np.array([row["TemperatureC"] for row in results], dtype=float)
-    if len(np.unique(x)) < 2:
+    x_values = np.array(
+        [row["FocuserSteps"] for row in results],
+        dtype=float,
+    )
+    y_values = np.array(
+        [row["TemperatureC"] for row in results],
+        dtype=float,
+    )
+    if len(np.unique(x_values)) < 2:
         return results, [], 0
 
-    design_matrix = sm.add_constant(x)
-    model = sm.OLS(y, design_matrix).fit()
-    influence = model.get_influence()
-    studentized = influence.resid_studentized_external
+    design_matrix = sm.add_constant(x_values)
+    model = sm.OLS(y_values, design_matrix).fit()
+    studentized = model.get_influence().resid_studentized_external
 
     filtered = []
     removed = []
     for row, residual in zip(results, studentized):
-        row_with_diagnostic = row.copy()
-        row_with_diagnostic["StudentizedResidual"] = round(float(residual), 3)
-        row_with_diagnostic["Synthetic"] = "yes" if row.get("_synthetic") else "no"
+        diagnostic = row.copy()
+        diagnostic["StudentizedResidual"] = round(float(residual), 3)
+        diagnostic["Synthetic"] = "yes" if row.get("_synthetic") else "no"
+
         if abs(residual) > threshold:
-            row_with_diagnostic["Reason"] = f"Studentized residual > {threshold:.1f}"
-            removed.append(row_with_diagnostic)
+            diagnostic["Reason"] = (
+                f"Studentized residual > {threshold:.1f}"
+            )
+            removed.append(diagnostic)
         else:
             filtered.append(row)
+
     return filtered, removed, len(removed)
 
 
 def write_csv(results, output_csv: Path, fieldnames):
     with output_csv.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=fieldnames,
+            extrasaction="ignore",
+        )
         writer.writeheader()
         writer.writerows(results)
 
@@ -361,6 +585,7 @@ def write_state_json(results, output_json: Path, inverse_slope, slope, intercept
     real_results = [row for row in results if not row.get("_synthetic")]
     if not real_results:
         return False
+
     last_result = real_results[-1]
     state = {
         "timestamp_ref": last_result["DateTime"],
@@ -368,9 +593,15 @@ def write_state_json(results, output_json: Path, inverse_slope, slope, intercept
         "focus_ref": int(last_result["FocuserSteps"]),
         "last_temp_applied": round(float(last_result["TemperatureC"]), 2),
         "last_focus_applied": int(last_result["FocuserSteps"]),
-        "model_tcf": None if inverse_slope is None else round(float(inverse_slope), 2),
-        "model_inv_tcf": None if slope is None else round(float(slope), 6),
-        "model_intercept_c": None if intercept is None else round(float(intercept), 3),
+        "model_tcf": (
+            None if inverse_slope is None else round(float(inverse_slope), 2)
+        ),
+        "model_inv_tcf": (
+            None if slope is None else round(float(slope), 6)
+        ),
+        "model_intercept_c": (
+            None if intercept is None else round(float(intercept), 3)
+        ),
     }
     with output_json.open("w", encoding="utf-8") as handle:
         json.dump(state, handle, indent=2, ensure_ascii=False)
@@ -381,7 +612,7 @@ def write_state_json(results, output_json: Path, inverse_slope, slope, intercept
 def style_table(table, fontsize=7.0, header_height=0.058, row_height=0.050):
     table.auto_set_font_size(False)
     table.set_fontsize(fontsize)
-    for (row, col), cell in table.get_celld().items():
+    for (row, _column), cell in table.get_celld().items():
         cell.set_edgecolor("#cccccc")
         cell.set_linewidth(0.8)
         if row == 0:
@@ -408,53 +639,89 @@ def create_chart(
     tube_label: str,
     real_count: int,
 ):
-    """Render the regression chart.
-
-    synthetic_count is computed here from the survivors of the outlier filter
-    (synth_results) rather than from the raw synthetic CSV length, so that the
-    legend shows the number of synthetic points actually used in the regression,
-    not the number loaded before filtering.
-    """
     import matplotlib
+
     matplotlib.use("Agg")
+
     import matplotlib.pyplot as plt
     import numpy as np
 
-    DC = DEG_C_CHART
+    dc = DEG_C_CHART
     real_results = [row for row in results if not row.get("_synthetic")]
     synth_results = [row for row in results if row.get("_synthetic")]
-    # Count survivors, not raw loaded points (fix: was passed as argument
-    # computed before outlier filtering, so expelled synthetics were counted).
     synthetic_count = len(synth_results)
 
-    x_all = np.array([row["FocuserSteps"] for row in results], dtype=float)
-    y_all = np.array([row["TemperatureC"] for row in results], dtype=float)
-    x_real = np.array([row["FocuserSteps"] for row in real_results], dtype=float)
-    y_real = np.array([row["TemperatureC"] for row in real_results], dtype=float)
+    x_all = np.array(
+        [row["FocuserSteps"] for row in results],
+        dtype=float,
+    )
+    y_all = np.array(
+        [row["TemperatureC"] for row in results],
+        dtype=float,
+    )
+    x_real = np.array(
+        [row["FocuserSteps"] for row in real_results],
+        dtype=float,
+    )
+    y_real = np.array(
+        [row["TemperatureC"] for row in real_results],
+        dtype=float,
+    )
 
     fig = plt.figure(figsize=(11.2, 6.4))
     ax = fig.add_axes([0.08, 0.16, 0.58, 0.74])
     info_ax = fig.add_axes([0.70, 0.12, 0.28, 0.78])
     info_ax.axis("off")
 
-    scatter = ax.scatter(x_real, y_real, color="navy", s=38, label="Autofocus results", zorder=3)
+    scatter = ax.scatter(
+        x_real,
+        y_real,
+        color="navy",
+        s=38,
+        label="Autofocus results",
+        zorder=3,
+    )
 
     synth_scatter = None
     if synth_results:
-        x_synth = np.array([row["FocuserSteps"] for row in synth_results], dtype=float)
-        y_synth = np.array([row["TemperatureC"] for row in synth_results], dtype=float)
+        x_synth = np.array(
+            [row["FocuserSteps"] for row in synth_results],
+            dtype=float,
+        )
+        y_synth = np.array(
+            [row["TemperatureC"] for row in synth_results],
+            dtype=float,
+        )
         synth_scatter = ax.scatter(
-            x_synth, y_synth, color="green", s=38, marker="s", label="Synthetic data", zorder=3
+            x_synth,
+            y_synth,
+            color="green",
+            s=38,
+            marker="s",
+            label="Synthetic data",
+            zorder=3,
         )
 
     outlier_scatter = None
     outlier_x = None
     if removed_outliers:
-        outlier_x = np.array([row["FocuserSteps"] for row in removed_outliers], dtype=float)
-        outlier_y = np.array([row["TemperatureC"] for row in removed_outliers], dtype=float)
+        outlier_x = np.array(
+            [row["FocuserSteps"] for row in removed_outliers],
+            dtype=float,
+        )
+        outlier_y = np.array(
+            [row["TemperatureC"] for row in removed_outliers],
+            dtype=float,
+        )
         outlier_scatter = ax.scatter(
-            outlier_x, outlier_y, s=72, facecolors="none", edgecolors="darkorange",
-            linewidths=1.5, label="Removed outliers", zorder=4
+            outlier_x,
+            outlier_y,
+            s=72,
+            facecolors="none",
+            edgecolors="darkorange",
+            linewidths=1.5,
+            label="Removed outliers",
+            zorder=4,
         )
 
     slope = None
@@ -485,34 +752,77 @@ def create_chart(
 
         solid_x = np.linspace(data_x_min, data_x_max, 200)
         solid_y = slope * solid_x + intercept
-        solid_line, = ax.plot(solid_x, solid_y, color="red", linewidth=1.9, linestyle="-", zorder=2)
+        solid_line, = ax.plot(
+            solid_x,
+            solid_y,
+            color="red",
+            linewidth=1.9,
+            linestyle="-",
+            zorder=2,
+        )
 
         if axis_x_min < data_x_min:
             left_x = np.linspace(axis_x_min, data_x_min, 80)
-            left_y = slope * left_x + intercept
-            ax.plot(left_x, left_y, color="red", linewidth=1.6, linestyle="--", zorder=1)
+            ax.plot(
+                left_x,
+                slope * left_x + intercept,
+                color="red",
+                linewidth=1.6,
+                linestyle="--",
+                zorder=1,
+            )
+
         if axis_x_max > data_x_max:
             right_x = np.linspace(data_x_max, axis_x_max, 80)
-            right_y = slope * right_x + intercept
-            ax.plot(right_x, right_y, color="red", linewidth=1.6, linestyle="--", zorder=1)
+            ax.plot(
+                right_x,
+                slope * right_x + intercept,
+                color="red",
+                linewidth=1.6,
+                linestyle="--",
+                zorder=1,
+            )
 
-        dashed_proxy, = ax.plot([], [], color="red", linewidth=1.6, linestyle="--")
+        dashed_proxy, = ax.plot(
+            [],
+            [],
+            color="red",
+            linewidth=1.6,
+            linestyle="--",
+        )
 
-        if predict_temperature is not None and not math.isclose(slope, 0.0, abs_tol=1e-12):
+        if (
+            predict_temperature is not None
+            and not math.isclose(slope, 0.0, abs_tol=1e-12)
+        ):
             predicted_steps = (predict_temperature - intercept) / slope
             predicted_steps_rounded = round(predicted_steps)
-            prediction_marker = ax.scatter([predicted_steps], [predict_temperature], color="green", s=70, marker="D", zorder=5)
+            prediction_marker = ax.scatter(
+                [predicted_steps],
+                [predict_temperature],
+                color="green",
+                s=70,
+                marker="D",
+                zorder=5,
+            )
             ax.annotate(
-                f"{predicted_steps_rounded} steps @ {predict_temperature:.2f} {DC}",
-                xy=(predicted_steps, predict_temperature), xytext=(10, 10), textcoords="offset points",
-                fontsize=8, color="darkgreen",
+                f"{predicted_steps_rounded} steps @ "
+                f"{predict_temperature:.2f} {dc}",
+                xy=(predicted_steps, predict_temperature),
+                xytext=(10, 10),
+                textcoords="offset points",
+                fontsize=8,
+                color="darkgreen",
                 bbox=dict(boxstyle="round", facecolor="white", alpha=0.85),
                 arrowprops=dict(arrowstyle="->", color="darkgreen"),
             )
 
-    ax.set_title(f"Focuser Position vs Temperature — {tube_label}", fontsize=11)
+    ax.set_title(
+        f"Focuser Position vs Temperature — {tube_label}",
+        fontsize=11,
+    )
     ax.set_xlabel("s: Focuser Steps", fontsize=9.5, labelpad=6)
-    ax.set_ylabel(f"T: Temperature ({DC})", fontsize=9.5)
+    ax.set_ylabel(f"T: Temperature ({dc})", fontsize=9.5)
     ax.tick_params(axis="both", labelsize=8.5)
     ax.grid(True, alpha=0.3)
 
@@ -539,9 +849,17 @@ def create_chart(
         labels.append("Regression line (estimated range)")
     if prediction_marker is not None:
         handles.append(prediction_marker)
-        labels.append(f"Prediction at {predict_temperature:.2f} {DC}")
+        labels.append(f"Prediction at {predict_temperature:.2f} {dc}")
 
-    legend = info_ax.legend(handles, labels, loc="upper left", frameon=True, borderpad=0.5, labelspacing=0.5, fontsize=8)
+    legend = info_ax.legend(
+        handles,
+        labels,
+        loc="upper left",
+        frameon=True,
+        borderpad=0.5,
+        labelspacing=0.5,
+        fontsize=8,
+    )
 
     first_focus = None
     last_focus = None
@@ -557,14 +875,23 @@ def create_chart(
 
     model_rows = [
         ["Regression equation", regression_equation],
-        ["T", f"Temperature ({DC})"],
+        ["T", f"Temperature ({dc})"],
         ["s", "Focuser Steps"],
     ]
     if predict_temperature is not None:
-        model_rows.append(["Target T", f"{predict_temperature:.2f} {DC}"])
-    model_rows.append([f"k ({DC}/step)", f"{slope:.6f}" if slope is not None else "-"])
-    model_rows.append([f"TCF = 1/k (step/{DC})", f"{inverse_slope:.2f}" if inverse_slope is not None else "-"])
-    model_rows.append([f"b ({DC})", f"{intercept:.3f}" if intercept is not None else "-"])
+        model_rows.append(["Target T", f"{predict_temperature:.2f} {dc}"])
+    model_rows.append(
+        [f"k ({dc}/step)", f"{slope:.6f}" if slope is not None else "-"]
+    )
+    model_rows.append(
+        [
+            f"TCF = 1/k (step/{dc})",
+            f"{inverse_slope:.2f}" if inverse_slope is not None else "-",
+        ]
+    )
+    model_rows.append(
+        [f"b ({dc})", f"{intercept:.3f}" if intercept is not None else "-"]
+    )
     if predicted_steps_rounded is not None:
         model_rows.append(["Focus(T)", f"{predicted_steps_rounded} steps"])
 
@@ -585,27 +912,56 @@ def create_chart(
         focus_rows.append(["Outliers", "Disabled"])
     if auto_axis:
         focus_rows.append(["X axis", "Auto (steps)"])
-        focus_rows.append(["Y axis", f"Auto ({DC})"])
+        focus_rows.append(["Y axis", f"Auto ({dc})"])
     else:
         focus_rows.append(["X axis", f"{x_min:.0f} to {x_max:.0f} steps"])
-        focus_rows.append(["Y axis", f"{y_min:.0f} to {y_max:.0f} {DC}"])
+        focus_rows.append(["Y axis", f"{y_min:.0f} to {y_max:.0f} {dc}"])
 
-    info_ax.text(0.01, 0.690, "Model", fontsize=9, fontweight="bold", ha="left", va="bottom")
-    info_ax.text(0.01, 0.365, "Focus", fontsize=9, fontweight="bold", ha="left", va="bottom")
+    info_ax.text(
+        0.01,
+        0.690,
+        "Model",
+        fontsize=9,
+        fontweight="bold",
+        ha="left",
+        va="bottom",
+    )
+    info_ax.text(
+        0.01,
+        0.365,
+        "Focus",
+        fontsize=9,
+        fontweight="bold",
+        ha="left",
+        va="bottom",
+    )
 
     model_table = info_ax.table(
-        cellText=model_rows, colLabels=["Item", "Value"], colLoc="left", cellLoc="left",
-        colWidths=[0.41, 0.55], bbox=[0.01, 0.465, 0.96, 0.22],
+        cellText=model_rows,
+        colLabels=["Item", "Value"],
+        colLoc="left",
+        cellLoc="left",
+        colWidths=[0.41, 0.55],
+        bbox=[0.01, 0.465, 0.96, 0.22],
     )
-    style_table(model_table, fontsize=7.0, header_height=0.058, row_height=0.050)
+    style_table(model_table)
 
     focus_table = info_ax.table(
-        cellText=focus_rows, colLabels=["Item", "Value"], colLoc="left", cellLoc="left",
-        colWidths=[0.42, 0.54], bbox=[0.01, 0.11, 0.96, 0.25],
+        cellText=focus_rows,
+        colLabels=["Item", "Value"],
+        colLoc="left",
+        cellLoc="left",
+        colWidths=[0.42, 0.54],
+        bbox=[0.01, 0.11, 0.96, 0.25],
     )
-    style_table(focus_table, fontsize=7.0, header_height=0.058, row_height=0.050)
+    style_table(focus_table)
 
-    fig.savefig(chart_path, dpi=130, bbox_inches="tight", bbox_extra_artists=(legend,))
+    fig.savefig(
+        chart_path,
+        dpi=130,
+        bbox_inches="tight",
+        bbox_extra_artists=(legend,),
+    )
     plt.close(fig)
     return slope, intercept, inverse_slope, predicted_steps_rounded
 
@@ -613,22 +969,35 @@ def create_chart(
 def main():
     args = parse_arguments()
 
-    td = TUBE_DEFAULTS[args.tube]
-    tube_label = td["label"]
-    min_position = args.min_position if args.min_position is not None else td["min_position"]
-    max_position = args.max_position if args.max_position is not None else td["max_position"]
+    tube_defaults = TUBE_DEFAULTS[args.tube]
+    config_path = (
+        args.config.resolve()
+        if args.config is not None
+        else get_default_config_path()
+    )
+    config_values = load_tube_focus_config(
+        config_path,
+        args.tube,
+        tube_defaults,
+    )
+    interval = resolve_focus_interval(args, tube_defaults, config_values)
 
-    # Bug #7: validate position range before doing any work.
-    if min_position >= max_position:
-        raise ValueError(
-            f"--min-position ({min_position}) must be strictly less than "
-            f"--max-position ({max_position})."
-        )
+    tube_label = tube_defaults["label"]
+    min_position = interval["min_position"]
+    max_position = interval["max_position"]
+    x_min = interval["x_min"]
+    x_max = interval["x_max"]
 
-    x_min = args.x_min if args.x_min is not None else td["x_min"]
-    x_max = args.x_max if args.x_max is not None else td["x_max"]
-    output_csv_name = args.output_csv if args.output_csv is not None else td["output_csv"]
-    output_state_name = args.output_state_json if args.output_state_json is not None else td["output_state"]
+    output_csv_name = (
+        args.output_csv
+        if args.output_csv is not None
+        else tube_defaults["output_csv"]
+    )
+    output_state_name = (
+        args.output_state_json
+        if args.output_state_json is not None
+        else tube_defaults["output_state"]
+    )
 
     remove_outliers = not args.no_remove_outliers
     start_date = get_start_date(args.last_days)
@@ -636,15 +1005,35 @@ def main():
     log_path = Path(args.log_path)
     output_csv = Path(output_csv_name).resolve()
     outliers_csv = output_csv.with_name(
-        output_csv.stem.replace("sharpcap_data_focus", "sharpcap_removed_outliers") + output_csv.suffix
+        output_csv.stem.replace(
+            "sharpcap_data_focus",
+            "sharpcap_removed_outliers",
+        )
+        + output_csv.suffix
     )
-    chart_path = output_csv.with_name(td["chart_name"])
+    chart_path = output_csv.with_name(tube_defaults["chart_name"])
     state_json = Path(output_state_name).resolve()
 
+    print(f"Tube: {tube_label}")
+    print(f"Focus configuration source: {interval['source']}")
+    print(f"Focus center: {interval['focus_center']} steps")
+    print(f"Focus range: {interval['focus_range']} steps")
+    print(
+        f"Position filter: {min_position} to {max_position} steps"
+    )
+
     log_files = get_log_files(log_path, start_date)
-    real_results = parse_logs(log_files, min_position, max_position, start_date)
-    # Bug #8: pass position range so out-of-range synthetic points are discarded.
-    synthetic_rows = load_synthetic_csv(output_csv, min_position, max_position)
+    real_results = parse_logs(
+        log_files,
+        min_position,
+        max_position,
+        start_date,
+    )
+    synthetic_rows = load_synthetic_csv(
+        output_csv,
+        min_position,
+        max_position,
+    )
 
     combined = real_results + synthetic_rows
     combined.sort(key=lambda item: item["DateTime"])
@@ -654,35 +1043,55 @@ def main():
     removed_count = 0
 
     if remove_outliers and combined:
-        combined, removed_outliers, removed_count = filter_outliers_studentized(combined, args.studentized_threshold)
+        combined, removed_outliers, removed_count = filter_outliers_studentized(
+            combined,
+            args.studentized_threshold,
+        )
 
     real_clean = [row for row in combined if not row.get("_synthetic")]
 
-    write_csv(real_clean, output_csv, ["DateTime", "TemperatureC", "FocuserSteps"])
+    write_csv(
+        real_clean,
+        output_csv,
+        ["DateTime", "TemperatureC", "FocuserSteps"],
+    )
     print(f"CSV created: {output_csv}")
 
     if remove_outliers:
         write_csv(
             removed_outliers,
             outliers_csv,
-            ["DateTime", "TemperatureC", "FocuserSteps", "StudentizedResidual", "Synthetic", "Reason"],
+            [
+                "DateTime",
+                "TemperatureC",
+                "FocuserSteps",
+                "StudentizedResidual",
+                "Synthetic",
+                "Reason",
+            ],
         )
         print(f"Outliers CSV created: {outliers_csv}")
         print(f"Outliers written: {len(removed_outliers)}")
 
-    # synthetic_count after filtering (survivors only).
-    synthetic_count = len([r for r in combined if r.get("_synthetic")])
-    print(f"Tube: {tube_label}")
+    synthetic_count = len(
+        [row for row in combined if row.get("_synthetic")]
+    )
+
     print(f"Extracted autofocus results: {original_count}")
-    print(f"Remaining points after filters: {len(real_clean)} real + {synthetic_count} synthetic")
+    print(
+        f"Remaining points after filters: {len(real_clean)} real + "
+        f"{synthetic_count} synthetic"
+    )
 
     if start_date is not None:
         print(f"Calendar-day filter start: {start_date.isoformat()}")
 
     if remove_outliers:
         print(f"Outliers removed: {removed_count}")
-        print("Outlier method: externally studentized residuals "
-              f"(|t| > {args.studentized_threshold:.1f})")
+        print(
+            "Outlier method: externally studentized residuals "
+            f"(|t| > {args.studentized_threshold:.1f})"
+        )
     else:
         print("Outlier removal: disabled")
 
@@ -690,7 +1099,10 @@ def main():
         print("Axis mode: automatic")
     else:
         print(f"X axis limits: {x_min} to {x_max} steps")
-        print(f"Y axis limits: {args.y_min} to {args.y_max} {DEG_C_CONSOLE}")
+        print(
+            f"Y axis limits: {args.y_min} to {args.y_max} "
+            f"{DEG_C_CONSOLE}"
+        )
 
     if real_clean:
         first_focus = real_clean[0]["FocuserSteps"]
@@ -701,31 +1113,72 @@ def main():
         print(f"Delta focus: {focus_span_steps:+d} steps")
 
         slope, intercept, inverse_slope, predicted_steps_rounded = create_chart(
-            combined, removed_outliers, chart_path, args.predict_temperature,
-            args.studentized_threshold, remove_outliers, x_min, x_max,
-            args.y_min, args.y_max, args.auto_axis, tube_label,
+            combined,
+            removed_outliers,
+            chart_path,
+            args.predict_temperature,
+            args.studentized_threshold,
+            remove_outliers,
+            x_min,
+            x_max,
+            args.y_min,
+            args.y_max,
+            args.auto_axis,
+            tube_label,
             real_count=len(real_clean),
         )
 
         if slope is not None and intercept is not None:
-            print(f"Regression equation: T = {slope:.6f} * Steps + {intercept:.3f}")
+            print(
+                f"Regression equation: T = {slope:.6f} * Steps + "
+                f"{intercept:.3f}"
+            )
             print(f"k = {slope:.6f} {DEG_C_CONSOLE}/step")
             if inverse_slope is not None:
-                print(f"TCF = 1/k = {inverse_slope:.2f} steps/{DEG_C_CONSOLE}")
+                print(
+                    f"TCF = 1/k = {inverse_slope:.2f} "
+                    f"steps/{DEG_C_CONSOLE}"
+                )
             print(f"b = {intercept:.3f} {DEG_C_CONSOLE}")
-            if predicted_steps_rounded is not None and args.predict_temperature is not None:
-                print(f"Predicted focus for {args.predict_temperature:.2f} {DEG_C_CONSOLE}: {predicted_steps_rounded} steps")
+            if (
+                predicted_steps_rounded is not None
+                and args.predict_temperature is not None
+            ):
+                print(
+                    f"Predicted focus for "
+                    f"{args.predict_temperature:.2f} {DEG_C_CONSOLE}: "
+                    f"{predicted_steps_rounded} steps"
+                )
         else:
             print("Regression could not be calculated with the available points.")
 
-        state_written = write_state_json(combined, state_json, inverse_slope, slope, intercept)
+        state_written = write_state_json(
+            combined,
+            state_json,
+            inverse_slope,
+            slope,
+            intercept,
+        )
         if state_written:
             print(f"State JSON created: {state_json}")
-            print(f"Reference autofocus timestamp: {real_clean[-1]['DateTime']}")
-            print(f"Reference temperature: {real_clean[-1]['TemperatureC']:.2f} {DEG_C_CONSOLE}")
-            print(f"Reference focus: {real_clean[-1]['FocuserSteps']} steps")
+            print(
+                f"Reference autofocus timestamp: "
+                f"{real_clean[-1]['DateTime']}"
+            )
+            print(
+                f"Reference temperature: "
+                f"{real_clean[-1]['TemperatureC']:.2f} "
+                f"{DEG_C_CONSOLE}"
+            )
+            print(
+                f"Reference focus: "
+                f"{real_clean[-1]['FocuserSteps']} steps"
+            )
         else:
-            print("State JSON was not created: no valid autofocus reference available.")
+            print(
+                "State JSON was not created: no valid autofocus reference "
+                "available."
+            )
 
         print(f"Chart created: {chart_path}")
     else:
