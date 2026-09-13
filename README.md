@@ -5,35 +5,120 @@ cleaning the data, and generating a CSV export, a regression chart that relates
 focuser position to temperature, and a JSON state file with the latest autofocus
 reference and the fitted thermal model.
 
-Supports two optical tubes via `--tube {main,guide}`:
+The script supports two optical tubes through `--tube {main,guide}` and can load
+a persistent, local focus configuration for each tube from
+`focus_config.properties`.
 
-| Tube | Hardware | EAF position range | Typical position | State JSON |
-|---|---|---|---|---|
-| `main` (default) | C8 + ASI2600MC Pro | 24 000 – 27 000 steps | ~25 000 | `sharpcap_focus_state.json` |
-| `guide` | 50ED + ASI224MC | 315 000 – 365 000 steps | ~347 000 | `sharpcap_focus_state_guide.json` |
+| Tube | Hardware | Default focus center | Default interval | State JSON |
+|---|---|---:|---:|---|
+| `main` (default) | C8 + ASI2600MC Pro + f/6.3 reducer | 18,700 steps | 17,200–20,200 | `sharpcap_focus_state.json` |
+| `guide` | Sky-Watcher 50ED + ASI224MC | 347,000 steps | 322,000–372,000 | `sharpcap_focus_state_guide.json` |
 
-> **Note on guide tube range:** the 50ED EAF (ASCOM.EAF_2.Focuser) is configured
-> with **Max Steps = 520 000** in ASICap → Focuser → Advanced, but autofocus
-> results during normal operation fall in the 315 000 – 365 000 step window.
-> Use `--min-position` / `--max-position` to override these defaults if your
-> setup differs.
+> **Guide tube note:** the 50ED EAF (`ASCOM.EAF_2.Focuser`) can have a much
+> larger mechanical range than the analysis interval. The script filters
+> autofocus results using the configured focus interval; the EAF hardware limit
+> remains independent. If the guide optical train changes—for example, after
+> adding a UV/IR-cut filter—refocus, determine a new stable centre, and update
+> the `[guide]` configuration before mixing the new data with earlier sessions.
 
 ## What it does
 
 - Reads SharpCap `Log_*.log` files.
-- Extracts autofocus results with timestamp, temperature, and best focus position.
-- Filters data by focuser step range (per-tube defaults, overridable).
+- Extracts autofocus results with timestamp, temperature and best-focus position.
+- Filters observations by a per-tube focus interval.
+- Reads persistent centres and interval widths from `focus_config.properties`.
+- Supports temporary `--focus-center` and `--focus-range` command-line overrides.
 - Filters data by the last N natural calendar days.
 - Optionally removes outliers using externally studentized residuals.
 - Fits a linear regression between temperature and focuser position.
-- Calculates the inverse slope as **TCF** (temperature compensation factor, in steps/°C).
+- Calculates the inverse slope as **TCF** (temperature compensation factor, in
+  steps/°C).
 - Predicts focuser position for a target temperature.
-- Exports cleaned results to CSV.
-- Exports removed outliers to a separate CSV.
-- Exports the last valid autofocus reference and the regression model to a JSON
-  state file, ready to be consumed by an external sequencer or automation script.
-- Generates a chart with regression, prediction marker, legend, and summary tables.
-- Chart title includes the tube label (e.g. *Focuser Position vs Temperature — Guide tube 50ED*).
+- Exports cleaned results to CSV and removed outliers to a separate CSV.
+- Exports the latest valid autofocus reference and fitted thermal model to JSON.
+- Generates a chart with regression, prediction marker, legend and summary tables.
+
+## Focus configuration
+
+### Persistent per-tube settings
+
+Copy the tracked template to create your local configuration:
+
+```powershell
+Copy-Item focus_config.properties.example focus_config.properties
+```
+
+`focus_config.properties` is intentionally excluded by `.gitignore`, so each
+observatory can maintain its own optical-train references without committing
+them.
+
+Example:
+
+```ini
+[main]
+; C8 + ASI2600MC Pro + f/6.3 reducer
+focus_center = 18700
+focus_range = 3000
+
+[guide]
+; Sky-Watcher 50ED + ASI224MC
+focus_center = 347000
+focus_range = 50000
+```
+
+For each tube, the script derives the accepted focus interval as:
+
+\[
+P_{\min}=P_{\mathrm{center}}-\frac{W}{2}
+\]
+
+\[
+P_{\max}=P_{\mathrm{center}}+\frac{W}{2}
+\]
+
+where \(P_{\mathrm{center}}\) is `focus_center` and \(W\) is `focus_range`.
+`focus_range` must be a positive, even integer, so the integer interval is
+centred exactly on `focus_center`.
+
+For the supplied main-tube values:
+
+```text
+focus_center = 18700
+focus_range  = 3000
+```
+
+the calculated range is:
+
+```text
+17200–20200
+```
+
+### Why the configuration is external
+
+The EAF step value is a reference coordinate, not an absolute optical measure.
+Changing a reducer, spacing, filter, camera, focuser coupling or mirror
+position can displace the measured best-focus position substantially. These
+changes belong in local configuration, not as code edits.
+
+For example, a C8 configuration whose focus changes from about 25,500 to
+18,700 after an optical-train modification has shifted by −6,800 steps. With
+the same 3,000-step interval width, the useful range moves from `24,000–27,000`
+to `17,200–20,200`.
+
+### Configuration precedence
+
+The script resolves focus limits using this order, from highest to lowest
+priority:
+
+1. `--min-position` together with `--max-position`.
+2. `--focus-center` with optional `--focus-range`, for a one-run override.
+3. The selected `[main]` or `[guide]` section in `focus_config.properties`.
+4. Internal fallback defaults in `TUBE_DEFAULTS`.
+
+`--focus-center` and `--focus-range` are deliberately temporary: they do not
+rewrite `focus_config.properties`. After a new value has been verified across
+several autofocus runs, edit the corresponding local configuration section to
+make it persistent.
 
 ## Main outputs
 
@@ -41,137 +126,97 @@ Supports two optical tubes via `--tube {main,guide}`:
 
 | File | Description |
 |---|---|
-| `sharpcap_data_focus.csv` | Filtered autofocus results. |
-| `sharpcap_removed_outliers.csv` | Removed outliers with studentized residual diagnostics. |
-| `sharpcap_focus_temperature.png` | Plot with regression line, prediction marker, and summary tables. |
-| `sharpcap_focus_state.json` | Last valid autofocus reference plus the fitted thermal model. |
+| `sharpcap_data_focus.csv` | Filtered autofocus results |
+| `sharpcap_removed_outliers.csv` | Removed outliers with studentized-residual diagnostics |
+| `sharpcap_focus_temperature.png` | Plot with regression line, prediction marker and summary tables |
+| `sharpcap_focus_state.json` | Last valid autofocus reference plus fitted thermal model |
 
 ### Guide tube (`--tube guide`)
 
 | File | Description |
 |---|---|
-| `sharpcap_data_focus_guide.csv` | Filtered autofocus results. |
-| `sharpcap_removed_outliers_guide.csv` | Removed outliers with studentized residual diagnostics. |
-| `sharpcap_focus_temperature_guide.png` | Plot with regression line, prediction marker, and summary tables. |
-| `sharpcap_focus_state_guide.json` | Last valid autofocus reference plus the fitted thermal model. |
+| `sharpcap_data_focus_guide.csv` | Filtered autofocus results |
+| `sharpcap_removed_outliers_guide.csv` | Removed outliers with studentized-residual diagnostics |
+| `sharpcap_focus_temperature_guide.png` | Plot with regression line, prediction marker and summary tables |
+| `sharpcap_focus_state_guide.json` | Last valid autofocus reference plus fitted thermal model |
 
 ## Regression model
 
-The chart uses the symbolic linear model:
+The chart uses the linear model:
 
 ```text
 T = k·s + b
 ```
 
-Where:
+where:
 
-- `T` = Temperature (°C)
-- `s` = Focuser Steps
-- `k` = slope in °C/step (called `slope` in the source code)
-- `TCF = 1/k` = temperature compensation factor in steps/°C (called `inverse_slope` in the source code)
-- `b` = intercept in °C
+- `T` is focuser temperature in °C.
+- `s` is focuser position in steps.
+- `k` is the slope in °C/step (`slope` in the source).
+- `TCF = 1/k` is the temperature compensation factor in steps/°C
+  (`inverse_slope` in the source).
+- `b` is the intercept in °C.
 
-> **Note on TCF sign:** for the C8 + F/6.3 reducer and the 50ED, the TCF is
-> **negative** (focus moves inward — fewer steps — as temperature rises).
-> Typical values: main tube ~−62 steps/°C, guide tube ~−850 steps/°C.
-> A positive TCF would mean the focuser needs to move outward as it warms up,
-> which is uncommon for these optical designs.
+> **TCF sign:** for the C8 + f/6.3 reducer and 50ED configurations, the TCF
+> is normally negative: focus moves inward, to fewer EAF steps, as temperature
+> rises. A positive TCF means outward motion with warming.
 
-## Synthetic data (Bayesian prior)
+## Synthetic data
 
-When real autofocus observations are scarce — especially at the start of a new
-season or for a newly commissioned tube — the regression model can be anchored
-with **synthetic data**: a set of plausible focuser-position/temperature pairs
-derived from prior knowledge of the optical tube’s thermal behaviour.
+When real autofocus observations are scarce—such as during a new season or
+after changing an optical train—the regression can be provisionally anchored
+with synthetic focus/temperature pairs.
 
-Synthetic points act as a **weak Bayesian prior**: they constrain the regression
-slope and intercept while real data is accumulating, and they are gradually
-outnumbered and overridden as more real observations are collected.
+Synthetic samples act as a weak Bayesian prior: they participate in the same
+regression and studentized-residual process as measured data, then naturally
+lose influence as genuine observations accumulate.
 
-### File naming convention
+### File naming
 
-Place the synthetic CSV **in the same folder** as the output CSV, using the
-following names:
+Place the synthetic CSV beside the output CSV:
 
-| Tube | Synthetic CSV |
+| Tube | Synthetic file |
 |---|---|
 | `main` | `sharpcap_synthetic_data_focus.csv` |
 | `guide` | `sharpcap_synthetic_data_focus_guide.csv` |
 
-The script detects these files automatically at runtime — no flag is needed.
+The script detects the relevant file automatically.
 
 ### CSV format
 
-The synthetic CSV must have the same three columns as the real data CSV:
-
-```text
+```csv
 DateTime,TemperatureC,FocuserSteps
 ```
 
 ### Behaviour
 
-- Synthetic points are **merged with real data** before regression.
-- They are **evaluated by the same outlier filter** as real points: if enough
-  real data accumulates to push a synthetic point beyond the studentized
-  residual threshold, it is expelled automatically, letting real observations
-  dominate the model naturally.
-- They are **plotted in green** with a distinct legend entry (*Synthetic data*).
-- They are **excluded from the output CSV** (`sharpcap_data_focus*.csv`) and
-  from the state JSON reference — only real measurements are written there.
-- If a synthetic point is expelled as an outlier, it appears in the
-  removed-outliers CSV with `Synthetic = yes`.
+- Synthetic and real observations are merged before regression.
+- Synthetic points are evaluated by the same outlier filter as real points.
+- They are plotted in green with a separate legend entry.
+- They are excluded from the generated cleaned-data CSV and JSON reference.
+- Expelled synthetic points are written to the outliers CSV with `Synthetic = yes`.
 
-### Realistic variance
+Use modest, realistic scatter in synthetic points, typically about
+\(500\)–\(1,000\) steps, rather than perfect collinearity. Remove or empty the
+synthetic file after enough real autofocus observations cover the normal
+seasonal temperature range.
 
-Synthetic points should include a small random scatter (σ ≈ 500–1 000 steps)
-around the expected regression line. A perfectly collinear set of synthetic
-points compresses the model’s residual variance artificially, which can cause
-real observations that lie slightly off the line to be incorrectly flagged as
-outliers by the studentized residual filter.
-
-### Example — guide tube (50ED + ASI224MC)
-
-The following table covers one representative observation per month across the
-full temperature range of the site, with ±800-step Gaussian noise added to each
-point to simulate realistic EAF scatter:
-
-```csv
-DateTime,TemperatureC,FocuserSteps
-2026-01-01 22:00:00,3.5,358745
-2026-02-01 21:30:00,4.5,357235
-2026-03-01 22:00:00,8.5,353851
-2026-04-01 21:00:00,11.0,352043
-2026-05-01 22:00:00,14.5,347128
-2026-06-01 22:00:00,21.0,340608
-2026-07-01 23:00:00,34.0,329019
-2026-08-01 22:30:00,30.0,332381
-2026-09-01 21:00:00,17.0,344432
-2026-10-01 20:00:00,12.0,350256
-2026-11-01 19:00:00,7.0,354467
-2026-12-01 19:00:00,4.0,357474
-```
-
-Copy this table into `sharpcap_synthetic_data_focus_guide.csv` (alongside
-`sharpcap_data_focus_guide.csv`) to bootstrap the guide tube model before
-collecting enough real sessions.
-
-> **Delete or empty the synthetic CSV** once you have accumulated 15–20 real
-> autofocus results that cover the seasonal temperature range. At that point the
-> real data is sufficient to fit a reliable model on its own.
+> **After an optical change:** do not blindly reuse synthetic samples from the
+> former train. Translate or regenerate them for the new focus coordinate only
+> after you have verified that the thermal slope remains comparable.
 
 ## JSON state file
 
-After each successful run the script writes the state JSON (path depends on `--tube`).
-This file is the **single source of truth** for the thermal model and the latest
-focus reference:
+After each successful run, the script writes the per-tube state JSON. It is the
+single source of truth for the latest reference and fitted thermal model:
 
 ```json
 {
   "timestamp_ref": "2026-08-24 23:11:32",
   "temp_ref": 18.4,
-  "focus_ref": 25342,
+  "focus_ref": 18700,
   "last_temp_applied": 18.4,
-  "last_focus_applied": 25342,
+  "last_focus_applied": 18700,
   "model_tcf": -61.59,
   "model_inv_tcf": -0.016237,
   "model_intercept_c": 889.541
@@ -180,187 +225,192 @@ focus reference:
 
 | Field | Description |
 |---|---|
-| `timestamp_ref` | Datetime of the last clean autofocus result used as reference. |
-| `temp_ref` | Focuser temperature (°C) at that reference point. |
-| `focus_ref` | Focuser position (steps) at that reference point. |
-| `last_temp_applied` | Temperature at which the last correction was applied (initially equal to `temp_ref`; can be overwritten by the sequencer at runtime). |
-| `last_focus_applied` | Focuser position of the last applied correction (initially equal to `focus_ref`). |
-| `model_tcf` | TCF = 1/k (steps/°C). **Negative for these tubes**: focus moves inward (fewer steps) as temperature rises. |
-| `model_inv_tcf` | k = slope (°C/step). Negative for refractors and most reflectors with focal reducers. |
-| `model_intercept_c` | Regression intercept b (°C). |
+| `timestamp_ref` | Timestamp of the last clean autofocus result used as reference |
+| `temp_ref` | Focuser temperature at the reference point in °C |
+| `focus_ref` | Focuser position at the reference point in steps |
+| `last_temp_applied` | Temperature at which the last correction was applied |
+| `last_focus_applied` | Focuser position of the last applied correction |
+| `model_tcf` | TCF, \(1/k\), in steps/°C |
+| `model_inv_tcf` | Regression slope \(k\) in °C/step |
+| `model_intercept_c` | Regression intercept \(b\) in °C |
 
-> **Note:** `last_temp_applied` and `last_focus_applied` are intentionally
-> separate from `temp_ref` / `focus_ref` so that an external sequencer can update
-> them at runtime to track the current compensation state without losing the
-> original reference.
+`last_temp_applied` and `last_focus_applied` are separate from
+`temp_ref`/`focus_ref` so the sequencer can maintain its live correction state
+without overwriting the reference measurement.
 
 ## Sister repository
 
-This repository works alongside
+This repository works with
 [sharpcap-focus-sequencer](https://github.com/davidglt/sharpcap-focus-sequencer)
-as two **sibling repositories** cloned under the same parent folder.
-The exact parent path does not matter; only the sibling relationship is required:
+as two sibling repositories:
 
-```
+```text
 <any-parent>\
-├── sharpcap-focus-temperature\   ← this repository
+├── sharpcap-focus-temperature\
 │   ├── sharpcap_focuser.py
-│   ├── sharpcap_focus_state.json        ← main tube state (single source of truth)
-│   └── sharpcap_focus_state_guide.json  ← guide tube state (single source of truth)
-└── sharpcap-focus-sequencer\      ← consumes both state JSON files
+│   ├── focus_config.properties.example
+│   ├── focus_config.properties          ← local, ignored by Git
+│   ├── sharpcap_focus_state.json
+│   └── sharpcap_focus_state_guide.json
+└── sharpcap-focus-sequencer\
     ├── focus_sequencer.py
-    ├── run_focus.bat              ← main tube entry point
-    └── run_focus_guide.bat        ← guide tube entry point
+    ├── run_focus.bat
+    └── run_focus_guide.bat
 ```
 
-`sharpcap_focus_state.json` and `sharpcap_focus_state_guide.json` are generated by
-`sharpcap_focuser.py` and automatically refreshed by the sequencer before each
-thermal correction. **Do not copy them** into the sibling repository — that would
-create stale duplicates that silently drift from the real models.
-
-See the [sharpcap-focus-sequencer](https://github.com/davidglt/sharpcap-focus-sequencer)
-README for the full two-repository workflow and installation instructions.
+The state JSON files are generated by `sharpcap_focuser.py` and refreshed by the
+sequencer before thermal corrections. Do not copy them into the sibling
+repository: that would create stale duplicate state.
 
 ## Installation
 
-Clone the repository and create the virtual environment:
-
-```bash
+```powershell
 cd <any-parent>
-git clone https://github.com/davidglt/sharpcap-focus-temperature.git
+git clone [https://github.com/davidglt/sharpcap-focus-temperature.git](https://github.com/davidglt/sharpcap-focus-temperature.git)
 cd sharpcap-focus-temperature
 python -m venv .venv
-.venv\Scripts\pip install -r requirements\requirements.txt
+.venv\Scripts\pip.exe install -r requirements\requirements.txt
+Copy-Item focus_config.properties.example focus_config.properties
 ```
 
-Always invoke the script through the project’s own virtual environment:
+Always invoke the script through its local virtual environment:
 
-```bash
+```powershell
 .venv\Scripts\python.exe sharpcap_focuser.py
 ```
 
-### Windows Execution Policy
+### Windows execution policy
 
-By default, Windows may block scripts downloaded from the internet.
-To allow the virtual environment activation scripts to run, set the execution
-policy for the current user **once** from an elevated PowerShell prompt:
+If Windows blocks activation scripts downloaded from the internet, set the
+current-user policy once from an elevated PowerShell prompt:
 
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 ```
 
-> **What this does:** allows locally created scripts to run, and allows
-> downloaded scripts that are signed by a trusted publisher. It does **not**
-> disable Windows Defender or any other security mechanism.
->
-> If you prefer a narrower change, you can unblock only the specific files
-> instead:
-> ```powershell
-> Unblock-File -Path C:\astro\sharpcap-focus-temperature\sharpcap_focuser.py
-> ```
+Or unblock only a specific local script:
+
+```powershell
+Unblock-File -Path C:\astro\sharpcap-focus-temperature\sharpcap_focuser.py
+```
 
 ## Requirements
 
-- Python 3.10 or newer recommended.
+- Python 3.10 or newer.
 - `numpy`
 - `matplotlib`
 - `statsmodels`
 
-Install dependencies with:
+Install dependencies:
 
-```bash
+```powershell
 pip install -r requirements\requirements.txt
 ```
 
 ## Usage
 
-Basic example — main tube (uses default SharpCap log path on Windows):
+### Standard per-tube runs
 
-```bash
-python sharpcap_focuser.py
+Main tube, using `[main]` from `focus_config.properties`:
+
+```powershell
+python sharpcap_focuser.py --tube main
 ```
 
-Guide tube — generate a separate model for the 50ED:
+Guide tube, using `[guide]` from `focus_config.properties`:
 
-```bash
+```powershell
 python sharpcap_focuser.py --tube guide
 ```
 
-Example with custom limits and target temperature (main tube):
+### Temporary recentring
 
-```bash
-python sharpcap_focuser.py \
-  --min-position 24000 \
-  --max-position 27000 \
-  --x-min 24000 \
-  --x-max 27000 \
-  --y-min -10 \
-  --y-max 40 \
+Test a new main-tube focus centre while retaining its configured interval width:
+
+```powershell
+python sharpcap_focuser.py --tube main --focus-center 19000
+```
+
+Test a new guide-tube reference and temporary 20,000-step interval:
+
+```powershell
+python sharpcap_focuser.py `
+  --tube guide `
+  --focus-center 350000 `
+  --focus-range 20000
+```
+
+The latter analyses `340000–360000` for that run only.
+
+### Explicit manual limits
+
+Use explicit limits for a one-off historical analysis:
+
+```powershell
+python sharpcap_focuser.py `
+  --tube main `
+  --min-position 17200 `
+  --max-position 20200 `
+  --x-min 17200 `
+  --x-max 20200 `
+  --y-min -10 `
+  --y-max 40 `
   --predict-temperature 12.5
 ```
 
-Example using only the last 7 calendar days and automatic axis scaling:
+`--min-position` and `--max-position` must be supplied together. Likewise,
+`--x-min` and `--x-max` must be supplied together.
 
-```bash
-python sharpcap_focuser.py \
-  --last-days 7 \
-  --auto-axis
-```
+### Other examples
 
-Example disabling outlier removal:
+```powershell
+python sharpcap_focuser.py --tube main --last-days 7 --auto-axis
 
-```bash
-python sharpcap_focuser.py --no-remove-outliers
-```
+python sharpcap_focuser.py --tube guide --no-remove-outliers
 
-Example writing the JSON state file to a custom path:
-
-```bash
-python sharpcap_focuser.py \
-  --output-state-json /path/to/sequencer/focus_state.json
+python sharpcap_focuser.py `
+  --tube main `
+  --output-state-json C:\astro\sharpcap-focus-sequencer\focus_state.json
 ```
 
 ## Command-line options
 
 | Option | Default | Description |
 |---|---|---|
-| `--tube` | `main` | Tube to analyse: `main` (C8 + ASI2600MC Pro, 24 000–27 000 steps) or `guide` (50ED + ASI224MC, 315 000–365 000 steps). Selects per-tube defaults for position range and output file names. |
-| `--log-path` | SharpCap logs folder | SharpCap log folder path. |
-| `--output-csv` | per tube | Output CSV file path. |
-| `--output-state-json` | per tube | Output JSON file with last valid autofocus reference and regression model. |
-| `--min-position` | per tube | Minimum focuser position to keep. |
-| `--max-position` | per tube | Maximum focuser position to keep. |
-| `--x-min` | per tube | Minimum X axis limit. |
-| `--x-max` | per tube | Maximum X axis limit. |
-| `--y-min` | `-10` | Minimum Y axis limit (°C). |
-| `--y-max` | `40` | Maximum Y axis limit (°C). |
-| `--auto-axis` | off | Use automatic axis scaling instead of fixed limits. |
-| `--last-days` | all history | Include only results from the last N calendar days. |
-| `--predict-temperature` | none | Predict focuser position for a target temperature (°C). |
-| `--no-remove-outliers` | off | Disable outlier removal. |
-| `--studentized-threshold` | `3.0` | Threshold for studentized residual outlier rejection. |
+| `--tube` | `main` | Tube to analyse: `main` or `guide` |
+| `--config` | `focus_config.properties` beside the script | Local `.properties` configuration file |
+| `--log-path` | SharpCap log folder | SharpCap log folder path |
+| `--output-csv` | Per tube | Output CSV file path |
+| `--output-state-json` | Per tube | Output JSON state path |
+| `--min-position` | None | Manual lower filtering limit; requires `--max-position` |
+| `--max-position` | None | Manual upper filtering limit; requires `--min-position` |
+| `--focus-center` | None | Temporary focus centre; uses the configured range if `--focus-range` is omitted |
+| `--focus-range` | None | Temporary total interval width; requires `--focus-center` |
+| `--x-min` | Calculated interval minimum | Manual X-axis lower limit; requires `--x-max` |
+| `--x-max` | Calculated interval maximum | Manual X-axis upper limit; requires `--x-min` |
+| `--y-min` | `-10` | Y-axis lower limit in °C |
+| `--y-max` | `40` | Y-axis upper limit in °C |
+| `--auto-axis` | Off | Use automatic axis scaling |
+| `--last-days` | All history | Include only the last N calendar days |
+| `--predict-temperature` | None | Predict focus position for a target temperature |
+| `--no-remove-outliers` | Off | Disable outlier removal |
+| `--studentized-threshold` | `3.0` | Absolute studentized-residual rejection threshold |
 
-## How outlier filtering works
+## Outlier filtering
 
-When enabled, the script fits a first-pass linear model and computes externally
-studentized residuals for each point.  Any point whose absolute studentized
-residual exceeds the threshold is removed and written to the outliers CSV.
-
-Default threshold:
+With outlier filtering enabled, the script fits a first-pass linear model and
+calculates externally studentized residuals. Any point satisfying:
 
 ```text
 |t| > 3.0
 ```
 
-Requires at least 5 data points to activate; if fewer are available the filter
-is silently skipped.
+is removed and written to the outliers CSV. At least five observations are
+required; with fewer, filtering is skipped.
 
-> **Note on synthetic data and outlier filtering:** synthetic points are evaluated
-> by the same studentized residual threshold as real observations. However, to
-> avoid artificially compressing the model’s residual variance, synthetic points
-> should include realistic scatter (σ ≈ 500–1 000 steps). A perfectly collinear
-> synthetic set would make the model overly sensitive and could incorrectly flag
-> valid real observations as outliers.
+Synthetic points use the same test. Include realistic scatter in synthetic data
+to avoid artificially reducing residual variance and incorrectly rejecting
+valid measured points.
 
 ## SharpCap log location
 
@@ -370,31 +420,33 @@ Default Windows path:
 %USERPROFILE%\AppData\Local\SharpCap\logs
 ```
 
-This is used automatically unless `--log-path` is specified.
+Use `--log-path` to select another folder.
 
 ## Typical workflow
 
-1. Run several autofocus operations during one or more imaging sessions.
-2. Execute the script against the SharpCap log folder.
-   - Main tube: `python sharpcap_focuser.py`
-   - Guide tube: `python sharpcap_focuser.py --tube guide`
-3. Inspect the corresponding CSV and PNG files.
-4. Review `k`, `TCF`, and the focus prediction for the temperature of interest.
-5. The sibling [sharpcap-focus-sequencer](https://github.com/davidglt/sharpcap-focus-sequencer)
-   reads the appropriate state JSON and applies temperature-based corrections
-   automatically during each nightly session, refreshing the model before every
-   correction cycle (live mode only; `--dry-run` uses the previously written
-   state without refreshing it from logs).
-6. Repeat after collecting more sessions to refine the regression.
+1. Set the correct `focus_center` and `focus_range` for each installed optical
+   train in `focus_config.properties`.
+2. Run several autofocus operations during one or more sessions.
+3. Generate or refresh the model:
+   ```powershell
+   python sharpcap_focuser.py --tube main
+   python sharpcap_focuser.py --tube guide
+   ```
+4. Inspect the per-tube CSV, chart and state JSON.
+5. Review `k`, TCF and predicted focus at the temperature of interest.
+6. Let the sibling sequencer refresh and use the appropriate state JSON during
+   nightly operation.
+7. After changing camera, reducer, filter, spacing or focuser mechanics,
+   establish a new focus reference, update the appropriate `.properties`
+   section and collect new validation data.
 
 ## License
 
 This project is licensed under the **GNU General Public License v3.0 or later**.
-
-See the `LICENSE` file for the full license text.
+See `LICENSE.txt` for the full text.
 
 ## Author
 
 **David González López-Tercero**  
-Website: [https://dragonit.es](https://dragonit.es)  
+Website: [dragonit.es](https://dragonit.es)  
 Email: [davidglt@dragonit.es](mailto:davidglt@dragonit.es)
