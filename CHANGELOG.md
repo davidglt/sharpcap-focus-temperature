@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-13
+
+### Added
+
+- Added `--generate-synthetic-data` to create a synthetic focus-temperature
+  CSV for the selected optical tube.
+- Added `--tcf`, required when generating synthetic data, to define the
+  temperature compensation factor in focuser steps per degree Celsius.
+- Added `--samples` to control the number of generated synthetic samples;
+  default: 12.
+- Added `--student-dof` to control the degrees of freedom of the Student's t
+  distribution used for synthetic focuser-position noise; default: 8.
+- Added `--noise-stddev` to set the target standard deviation of synthetic
+  focuser-position noise in steps; default: 12.0.
+- Added `--dry-run` to preview synthetic samples and diagnostics without
+  writing the synthetic CSV.
+- Added `--overwrite` to explicitly replace an existing synthetic CSV.
+- Added `temperature_center` as an optional per-tube focus configuration value.
+  It defines the focuser temperature at which `focus_center` is valid.
+- Added synthetic-generation diagnostics for input and recovered TCF,
+  position-temperature correlation, generated ranges, and clipped positions.
+- Added clipping warnings when generated focuser positions exceed the active
+  configured focus interval.
+
+### Changed
+
+- Synthetic data can now be generated directly from the selected tube's
+  `focus_center`, `temperature_center`, configured focus range, and supplied
+  TCF.
+- Generated synthetic samples are distributed over the previous 365 days and
+  use a seasonal temperature profile with a summer maximum.
+- Synthetic focuser-position residuals now use a normalized Student's t
+  distribution, allowing configurable heavy-tailed variation while preserving
+  the requested standard deviation.
+- `temperature_center` falls back to `15.00 °C` when it is not yet present in
+  an existing local `focus_config.properties` file.
+- Improved argument validation for finite numeric values and invalid
+  configuration combinations.
+
+### Removed
+
+- Removed `--min-position` and `--max-position`.
+  Use `--focus-center` with optional `--focus-range` for temporary interval
+  overrides, or set persistent values in `focus_config.properties`.
+
 ## [1.4.0] - 2026-08-30
 
 ### Added
@@ -70,10 +115,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Two-repo bug (sharpcap-focus-sequencer):** `refresh_state_json()` in the
   sibling sequencer repo was not passing `--tube guide` to `sharpcap_focuser.py`
-  when refreshing `sharpcap_focus_state_guide.json`.  As a result the producer
+  when refreshing `sharpcap_focus_state_guide.json`. As a result the producer
   ran with main-tube position defaults (24 000 – 27 000 steps), no guide-tube
   autofocus entries passed the filter, and the guide state JSON was written with
-  `model_tcf: null`, causing the sequencer to abort on the next cycle.  Fixed in
+  `model_tcf: null`, causing the sequencer to abort on the next cycle. Fixed in
   [sharpcap-focus-sequencer commit e88076f](https://github.com/davidglt/sharpcap-focus-sequencer/commit/e88076f33535a31e80e867424024325232cf3b1f).
 
 ### Documentation
@@ -161,11 +206,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--log-path` argument for custom SharpCap log folder.
 - `--output-csv` argument for custom output CSV path.
 
-[Unreleased]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.4.0...HEAD
-[1.4.0]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.3.2...v1.4.0
-[1.3.2]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.3.1...v1.3.2
-[1.3.1]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.3.0...v1.3.1
-[1.3.0]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.2.0...v1.3.0
-[1.2.0]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.1.0...v1.2.0
-[1.1.0]: https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.0.0...v1.1.0
-[1.0.0]: https://github.com/davidglt/sharpcap-focus-temperature/releases/tag/v1.0.0
+[Unreleased]: [https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.5.0...HEAD](https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.5.0...HEAD)
+[1.5.0]: [https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.4.0...v1.5.0](https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.4.0...v1.5.0)
+[1.4.0]: [https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.3.2...v1.4.0](https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.3.2...v1.4.0)
+[1.3.2]: [https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.3.1...v1.3.2](https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.3.1...v1.3.2)
+[1.3.1]: [https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.3.0...v1.3.1](https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.3.0...v1.3.1)
+[1.3.0]: [https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.2.0...v1.3.0](https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.2.0...v1.3.0)
+[1.2.0]: [https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.1.0...v1.2.0](https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.1.0...v1.2.0)
+[1.1.0]: [https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.0.0...v1.1.0](https://github.com/davidglt/sharpcap-focus-temperature/compare/v1.0.0...v1.1.0)
+[1.0.0]: [https://github.com/davidglt/sharpcap-focus-temperature/releases/tag/v1.0.0](https://github.com/davidglt/sharpcap-focus-temperature/releases/tag/v1.0.0)

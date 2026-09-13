@@ -20,11 +20,15 @@ focus_config.properties.example to focus_config.properties and set:
     [main]
     focus_center = 18700
     focus_range = 3000
+    temperature_center = 15.00
 
 The interval is calculated automatically:
 
     min_position = focus_center - focus_range / 2
     max_position = focus_center + focus_range / 2
+
+temperature_center is the focuser temperature in degrees Celsius at which
+focus_center is valid. It is used by --generate-synthetic-data.
 
 Command-line flags override the local configuration for one execution.
 
@@ -34,8 +38,9 @@ Features
 - Filters results by calendar days and focuser step range.
 - Loads optional per-tube focus configuration from a .properties file.
 - Supports temporary --focus-center and --focus-range CLI overrides.
+- Generates synthetic focus-temperature samples from a TCF.
 - Optionally removes outliers using externally studentized residuals.
-- Fits a linear regression between focuser position and temperature.
+- Fits a linear regression between temperature and focuser position.
 - Predicts focuser position for a target temperature.
 - Exports cleaned results and removed outliers to CSV.
 - Exports last valid autofocus reference and regression model to JSON.
@@ -48,6 +53,7 @@ import configparser
 import csv
 import json
 import math
+import random
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -57,11 +63,19 @@ DEG_C_CHART = "\u00B0C"
 DEG_C_CONSOLE = "\u00BAC"
 CONFIG_FILENAME = "focus_config.properties"
 
+SYNTHETIC_DEFAULT_SAMPLES = 12
+SYNTHETIC_DEFAULT_STUDENT_DOF = 8
+SYNTHETIC_DEFAULT_NOISE_STDDEV = 12.0
+SYNTHETIC_DEFAULT_TEMPERATURE_AMPLITUDE = 12.0
+SYNTHETIC_DEFAULT_TEMPERATURE_NOISE_STDDEV = 1.5
+SYNTHETIC_MAX_CLIPPING_FRACTION = 0.20
+
 TUBE_DEFAULTS = {
     "main": {
         "label": "Main tube C8",
         "focus_center": 18700,
         "focus_range": 3000,
+        "temperature_center": 15.00,
         "output_csv": "sharpcap_data_focus.csv",
         "output_state": "sharpcap_focus_state.json",
         "chart_name": "sharpcap_focus_temperature.png",
@@ -70,11 +84,74 @@ TUBE_DEFAULTS = {
         "label": "Guide tube 50ED",
         "focus_center": 347000,
         "focus_range": 50000,
+        "temperature_center": 15.00,
         "output_csv": "sharpcap_data_focus_guide.csv",
         "output_state": "sharpcap_focus_state_guide.json",
         "chart_name": "sharpcap_focus_temperature_guide.png",
     },
 }
+
+
+def non_negative_float(value: str) -> float:
+    """Parse a finite float greater than or equal to zero."""
+    try:
+        result = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "Value must be a finite number greater than or equal to zero."
+        ) from error
+
+    if not math.isfinite(result) or result < 0:
+        raise argparse.ArgumentTypeError(
+            "Value must be a finite number greater than or equal to zero."
+        )
+    return result
+
+
+def positive_int(value: str) -> int:
+    """Parse a positive integer."""
+    try:
+        result = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "Value must be a positive integer."
+        ) from error
+
+    if result < 1:
+        raise argparse.ArgumentTypeError(
+            "Value must be a positive integer."
+        )
+    return result
+
+
+def student_dof(value: str) -> int:
+    """Parse Student's t degrees of freedom with finite variance."""
+    try:
+        result = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "Value must be an integer greater than 2."
+        ) from error
+
+    if result <= 2:
+        raise argparse.ArgumentTypeError(
+            "Value must be an integer greater than 2."
+        )
+    return result
+
+
+def finite_float(value: str) -> float:
+    """Parse a finite float."""
+    try:
+        result = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "Value must be a finite number."
+        ) from error
+
+    if not math.isfinite(result):
+        raise argparse.ArgumentTypeError("Value must be a finite number.")
+    return result
 
 
 def parse_arguments():
@@ -118,24 +195,6 @@ def parse_arguments():
         ),
     )
     parser.add_argument(
-        "--min-position",
-        type=int,
-        default=None,
-        help=(
-            "Minimum focuser position to keep. Must be used with "
-            "--max-position. Overrides configuration for one execution."
-        ),
-    )
-    parser.add_argument(
-        "--max-position",
-        type=int,
-        default=None,
-        help=(
-            "Maximum focuser position to keep. Must be used with "
-            "--min-position. Overrides configuration for one execution."
-        ),
-    )
-    parser.add_argument(
         "--focus-center",
         type=int,
         default=None,
@@ -155,7 +214,7 @@ def parse_arguments():
     )
     parser.add_argument(
         "--x-min",
-        type=float,
+        type=finite_float,
         default=None,
         help=(
             "Minimum X-axis limit. Must be used with --x-max. "
@@ -164,7 +223,7 @@ def parse_arguments():
     )
     parser.add_argument(
         "--x-max",
-        type=float,
+        type=finite_float,
         default=None,
         help=(
             "Maximum X-axis limit. Must be used with --x-min. "
@@ -173,15 +232,15 @@ def parse_arguments():
     )
     parser.add_argument(
         "--y-min",
-        type=float,
+        type=finite_float,
         default=-10,
-        help="Minimum Y axis limit. Default: -10",
+        help="Minimum Y-axis limit. Default: -10.",
     )
     parser.add_argument(
         "--y-max",
-        type=float,
+        type=finite_float,
         default=40,
-        help="Maximum Y axis limit. Default: 40",
+        help="Maximum Y-axis limit. Default: 40.",
     )
     parser.add_argument(
         "--auto-axis",
@@ -196,7 +255,7 @@ def parse_arguments():
     )
     parser.add_argument(
         "--predict-temperature",
-        type=float,
+        type=finite_float,
         default=None,
         help="Predict focuser position for this temperature in \u00baC.",
     )
@@ -210,14 +269,109 @@ def parse_arguments():
     )
     parser.add_argument(
         "--studentized-threshold",
-        type=float,
+        type=non_negative_float,
         default=3.0,
-        help="Absolute studentized residual threshold. Default: 3.0",
+        help="Absolute studentized residual threshold. Default: 3.0.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--generate-synthetic-data",
+        action="store_true",
+        help=(
+            "Generate synthetic focus-temperature samples for the selected "
+            "tube and exit."
+        ),
+    )
+    parser.add_argument(
+        "--tcf",
+        type=finite_float,
+        default=None,
+        help=(
+            "Temperature compensation factor in focuser steps per degree "
+            "Celsius. Required with --generate-synthetic-data."
+        ),
+    )
+    parser.add_argument(
+        "--samples",
+        type=positive_int,
+        default=SYNTHETIC_DEFAULT_SAMPLES,
+        help=(
+            "Number of synthetic samples to generate. "
+            f"Default: {SYNTHETIC_DEFAULT_SAMPLES}."
+        ),
+    )
+    parser.add_argument(
+        "--student-dof",
+        type=student_dof,
+        default=SYNTHETIC_DEFAULT_STUDENT_DOF,
+        help=(
+            "Degrees of freedom for the Student's t distribution used to "
+            "generate synthetic focuser-position noise. Lower values produce "
+            "heavier tails and more samples farther from the expected "
+            "focus-temperature relation. Must be an integer greater than 2. "
+            f"Default: {SYNTHETIC_DEFAULT_STUDENT_DOF}."
+        ),
+    )
+    parser.add_argument(
+        "--noise-stddev",
+        type=non_negative_float,
+        default=SYNTHETIC_DEFAULT_NOISE_STDDEV,
+        help=(
+            "Target standard deviation in focuser steps of the random noise "
+            "added to synthetic focus positions. The Student's t distribution "
+            "is scaled to approximately match this standard deviation. "
+            f"Default: {SYNTHETIC_DEFAULT_NOISE_STDDEV:.1f}."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Preview generated synthetic data and diagnostics without writing "
+            "the synthetic CSV."
+        ),
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "Replace an existing synthetic CSV when used with "
+            "--generate-synthetic-data."
+        ),
+    )
+
+    args = parser.parse_args()
+
+    if args.focus_range is not None and args.focus_center is None:
+        parser.error("--focus-range requires --focus-center.")
+
+    if (args.x_min is None) != (args.x_max is None):
+        parser.error("--x-min and --x-max must be specified together.")
+
+    if args.x_min is not None and args.x_min >= args.x_max:
+        parser.error("--x-min must be strictly less than --x-max.")
+
+    if args.y_min >= args.y_max:
+        parser.error("--y-min must be strictly less than --y-max.")
+
+    if args.last_days is not None and args.last_days < 1:
+        parser.error("--last-days must be 1 or greater.")
+
+    if args.generate_synthetic_data:
+        if args.tcf is None:
+            parser.error(
+                "--tcf is required with --generate-synthetic-data."
+            )
+    elif args.overwrite:
+        parser.error("--overwrite requires --generate-synthetic-data.")
+
+    if args.dry_run and not args.generate_synthetic_data:
+        parser.error("--dry-run requires --generate-synthetic-data.")
+
+    return args
 
 
 def validate_center_and_range(focus_center: int, focus_range: int, source: str):
+    """Validate a focus centre/range pair and return the interval."""
     if focus_center < 0:
         raise ValueError(f"{source}: focus_center must not be negative.")
     if focus_range <= 0 or focus_range % 2 != 0:
@@ -237,20 +391,30 @@ def validate_center_and_range(focus_center: int, focus_range: int, source: str):
     return min_position, max_position
 
 
+def validate_temperature_center(temperature_center: float, source: str):
+    """Validate the temperature associated with focus_center."""
+    if not math.isfinite(temperature_center):
+        raise ValueError(
+            f"{source}: temperature_center must be a finite number."
+        )
+
+
 def get_default_config_path() -> Path:
+    """Return the default local focus configuration path."""
     return Path(__file__).resolve().with_name(CONFIG_FILENAME)
 
 
 def load_tube_focus_config(config_path: Path, tube: str, defaults: dict):
-    """Load optional per-tube center/range configuration.
+    """Load optional per-tube center/range/temperature configuration.
 
     Missing config files or missing tube sections are non-fatal: built-in
     defaults are retained. Invalid configured numeric values raise ValueError,
-    so a typo cannot silently contaminate the regression.
+    so a typo cannot silently contaminate the regression or synthetic data.
     """
     values = {
         "focus_center": defaults["focus_center"],
         "focus_range": defaults["focus_range"],
+        "temperature_center": defaults["temperature_center"],
         "source": "built-in defaults",
     }
 
@@ -274,54 +438,36 @@ def load_tube_focus_config(config_path: Path, tube: str, defaults: dict):
             values["focus_center"] = parser.getint(tube, "focus_center")
         if parser.has_option(tube, "focus_range"):
             values["focus_range"] = parser.getint(tube, "focus_range")
+        if parser.has_option(tube, "temperature_center"):
+            values["temperature_center"] = parser.getfloat(
+                tube,
+                "temperature_center",
+            )
     except ValueError as error:
         raise ValueError(
             f"Invalid numeric focus configuration in [{tube}] "
             f"of {config_path}: {error}"
         ) from error
 
+    source = f"Configuration [{tube}] in {config_path}"
     validate_center_and_range(
         values["focus_center"],
         values["focus_range"],
-        f"Configuration [{tube}] in {config_path}",
+        source,
     )
+    validate_temperature_center(values["temperature_center"], source)
     values["source"] = str(config_path)
     return values
 
 
-def resolve_focus_interval(args, tube_defaults: dict, config_values: dict):
-    """Resolve filtering and X-axis limits using documented precedence.
+def resolve_focus_interval(args, config_values: dict):
+    """Resolve focus filtering and chart interval.
 
     Precedence:
-      1. Explicit --min-position plus --max-position.
-      2. Temporary --focus-center plus optional --focus-range.
-      3. Per-tube focus_config.properties values.
-      4. Built-in TUBE_DEFAULTS values.
+      1. Temporary --focus-center plus optional --focus-range.
+      2. Per-tube focus_config.properties values.
+      3. Built-in TUBE_DEFAULTS values.
     """
-    manual_min_max = (
-        args.min_position is not None or args.max_position is not None
-    )
-    manual_x_axis = args.x_min is not None or args.x_max is not None
-
-    if manual_min_max and (
-        args.min_position is None or args.max_position is None
-    ):
-        raise ValueError(
-            "--min-position and --max-position must be specified together."
-        )
-
-    if manual_x_axis and (args.x_min is None or args.x_max is None):
-        raise ValueError("--x-min and --x-max must be specified together.")
-
-    if args.focus_range is not None and args.focus_center is None:
-        raise ValueError("--focus-range requires --focus-center.")
-
-    if args.focus_center is not None and manual_min_max:
-        raise ValueError(
-            "--focus-center cannot be combined with --min-position or "
-            "--max-position."
-        )
-
     if args.focus_center is not None:
         focus_center = args.focus_center
         focus_range = (
@@ -330,36 +476,6 @@ def resolve_focus_interval(args, tube_defaults: dict, config_values: dict):
             else args.focus_range
         )
         interval_source = "command-line focus center/range override"
-    elif manual_min_max:
-        min_position = args.min_position
-        max_position = args.max_position
-        if min_position >= max_position:
-            raise ValueError(
-                f"--min-position ({min_position}) must be strictly less than "
-                f"--max-position ({max_position})."
-            )
-
-        if manual_x_axis:
-            x_min = args.x_min
-            x_max = args.x_max
-            if x_min >= x_max:
-                raise ValueError(
-                    f"--x-min ({x_min}) must be strictly less than "
-                    f"--x-max ({x_max})."
-                )
-        else:
-            x_min = float(min_position)
-            x_max = float(max_position)
-
-        return {
-            "focus_center": (min_position + max_position) // 2,
-            "focus_range": max_position - min_position,
-            "min_position": min_position,
-            "max_position": max_position,
-            "x_min": x_min,
-            "x_max": x_max,
-            "source": "manual --min-position/--max-position override",
-        }
     else:
         focus_center = config_values["focus_center"]
         focus_range = config_values["focus_range"]
@@ -371,14 +487,9 @@ def resolve_focus_interval(args, tube_defaults: dict, config_values: dict):
         interval_source,
     )
 
-    if manual_x_axis:
+    if args.x_min is not None:
         x_min = args.x_min
         x_max = args.x_max
-        if x_min >= x_max:
-            raise ValueError(
-                f"--x-min ({x_min}) must be strictly less than "
-                f"--x-max ({x_max})."
-            )
     else:
         x_min = float(min_position)
         x_max = float(max_position)
@@ -395,15 +506,15 @@ def resolve_focus_interval(args, tube_defaults: dict, config_values: dict):
 
 
 def get_start_date(last_days: int | None):
+    """Return the first included calendar date or None for all history."""
     if last_days is None:
         return None
-    if last_days < 1:
-        raise ValueError("--last-days must be 1 or greater.")
     today = datetime.now().date()
     return today - timedelta(days=last_days - 1)
 
 
 def get_log_files(log_path: Path, start_date):
+    """Return SharpCap log files passing the optional date filter."""
     log_files = sorted(log_path.glob("Log_*.log"))
     if start_date is None:
         return log_files
@@ -423,6 +534,7 @@ def get_log_files(log_path: Path, start_date):
 
 
 def extract_date_from_filename(file_path: Path) -> str:
+    """Extract YYYY-MM-DD from a SharpCap log filename."""
     match = re.search(r"Log_(\d{4}-\d{2}-\d{2})T", file_path.name)
     if match:
         return match.group(1)
@@ -432,6 +544,7 @@ def extract_date_from_filename(file_path: Path) -> str:
 
 
 def parse_logs(log_files, min_position: int, max_position: int, start_date):
+    """Extract valid autofocus events from SharpCap logs."""
     time_regex = re.compile(
         r"^(?:Info|Debug|Warning|Error)\s+"
         r"(?P<time>\d{1,2}:\d{2}:\d{2})(?:\.\d+)?"
@@ -486,6 +599,7 @@ def parse_logs(log_files, min_position: int, max_position: int, start_date):
 
 
 def derive_synthetic_csv_path(output_csv: Path) -> Path:
+    """Return the synthetic CSV path associated with an output CSV."""
     name = output_csv.name.replace(
         "sharpcap_data_focus",
         "sharpcap_synthetic_data_focus",
@@ -493,11 +607,219 @@ def derive_synthetic_csv_path(output_csv: Path) -> Path:
     return output_csv.with_name(name)
 
 
+def sample_student_t(degrees_of_freedom: int) -> float:
+    """Return a Student's t sample without requiring scipy or numpy."""
+    normal_sample = random.gauss(0.0, 1.0)
+    chi_square = sum(
+        random.gauss(0.0, 1.0) ** 2
+        for _ in range(degrees_of_freedom)
+    )
+    return normal_sample / math.sqrt(chi_square / degrees_of_freedom)
+
+
+def calculate_synthetic_temperature(
+    fraction: float,
+    temperature_center: float,
+) -> float:
+    """Return a seasonal temperature with summer maximum and variation."""
+    seasonal = (
+        SYNTHETIC_DEFAULT_TEMPERATURE_AMPLITUDE
+        * math.cos(2.0 * math.pi * (fraction - 0.50))
+    )
+    random_variation = random.gauss(
+        0.0,
+        SYNTHETIC_DEFAULT_TEMPERATURE_NOISE_STDDEV,
+    )
+    return temperature_center + seasonal + random_variation
+
+
+def generate_synthetic_focus_data(
+    focus_center: int,
+    temperature_center: float,
+    min_position: int,
+    max_position: int,
+    tcf: float,
+    samples: int,
+    degrees_of_freedom: int,
+    noise_stddev: float,
+) -> tuple[list, int]:
+    """Generate synthetic focus-temperature samples.
+
+    Samples are evenly distributed over the previous 365 days. Temperatures
+    follow a smooth annual pattern with a summer maximum. Position residuals
+    use a Student's t distribution normalized to the target standard deviation.
+
+    Returns generated rows and the count of focus positions clipped to the
+    selected focus interval.
+    """
+    if samples < 1:
+        raise ValueError("Synthetic sample count must be at least 1.")
+    if degrees_of_freedom <= 2:
+        raise ValueError(
+            "Student's t degrees of freedom must be greater than 2."
+        )
+    if not math.isfinite(tcf):
+        raise ValueError("TCF must be a finite number.")
+    if not math.isfinite(noise_stddev) or noise_stddev < 0:
+        raise ValueError(
+            "Synthetic noise standard deviation must be finite and non-negative."
+        )
+
+    variance_normalizer = math.sqrt(
+        (degrees_of_freedom - 2) / degrees_of_freedom
+    )
+    end_time = datetime.now().replace(microsecond=0)
+    start_time = end_time - timedelta(days=365)
+    time_span = end_time - start_time
+    rows = []
+    clipped_count = 0
+
+    for index in range(samples):
+        fraction = 0.5 if samples == 1 else index / (samples - 1)
+        event_dt = start_time + time_span * fraction
+        temperature = calculate_synthetic_temperature(
+            fraction,
+            temperature_center,
+        )
+        noise = (
+            noise_stddev
+            * variance_normalizer
+            * sample_student_t(degrees_of_freedom)
+        )
+        expected_position = (
+            focus_center + tcf * (temperature - temperature_center)
+        )
+        unconstrained_position = round(expected_position + noise)
+        position = min(
+            max(unconstrained_position, min_position),
+            max_position,
+        )
+        if position != unconstrained_position:
+            clipped_count += 1
+
+        rows.append(
+            {
+                "DateTime": event_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "TemperatureC": round(temperature, 2),
+                "FocuserSteps": position,
+            }
+        )
+
+    return rows, clipped_count
+
+
+def calculate_tcf_from_rows(rows: list):
+    """Fit T = k*s + b and return TCF, slope, intercept and correlation."""
+    import numpy as np
+
+    if len(rows) < 2:
+        return None, None, None, None
+
+    positions = np.array(
+        [row["FocuserSteps"] for row in rows],
+        dtype=float,
+    )
+    temperatures = np.array(
+        [row["TemperatureC"] for row in rows],
+        dtype=float,
+    )
+
+    if len(np.unique(positions)) < 2:
+        return None, None, None, None
+
+    slope, intercept = np.polyfit(positions, temperatures, 1)
+    if math.isclose(slope, 0.0, abs_tol=1e-12):
+        recovered_tcf = None
+    else:
+        recovered_tcf = 1.0 / slope
+
+    if len(np.unique(temperatures)) < 2:
+        correlation = None
+    else:
+        correlation = float(np.corrcoef(positions, temperatures)[0, 1])
+
+    return recovered_tcf, slope, intercept, correlation
+
+
+def print_synthetic_diagnostics(
+    tube_label: str,
+    interval: dict,
+    temperature_center: float,
+    synthetic_csv: Path,
+    tcf: float,
+    samples: int,
+    degrees_of_freedom: int,
+    noise_stddev: float,
+    rows: list,
+    clipped_count: int,
+    recovered_tcf,
+    correlation,
+    dry_run: bool,
+):
+    """Print synthetic generation summary and regression diagnostics."""
+    positions = [row["FocuserSteps"] for row in rows]
+    temperatures = [row["TemperatureC"] for row in rows]
+
+    print("Synthetic focus data:")
+    print(f"Tube: {tube_label}")
+    print(f"Focus configuration source: {interval['source']}")
+    print(
+        f"Focus center: {interval['focus_center']} steps at "
+        f"{temperature_center:.2f} {DEG_C_CONSOLE}"
+    )
+    print(
+        f"Configured focus interval: {interval['min_position']} to "
+        f"{interval['max_position']} steps"
+    )
+    print(f"Samples: {samples}")
+    print(f"TCF input: {tcf:.2f} steps/{DEG_C_CONSOLE}")
+    print(f"Student's t degrees of freedom: {degrees_of_freedom}")
+    print(f"Noise target standard deviation: {noise_stddev:.1f} steps")
+    print(
+        f"Generated temperature range: {min(temperatures):.2f} to "
+        f"{max(temperatures):.2f} {DEG_C_CONSOLE}"
+    )
+    print(
+        f"Generated focus range: {min(positions)} to "
+        f"{max(positions)} steps"
+    )
+    print(f"Positions clipped to interval: {clipped_count}")
+
+    if recovered_tcf is None:
+        print("Recovered TCF: unavailable.")
+    else:
+        difference = recovered_tcf - tcf
+        print(f"Recovered TCF: {recovered_tcf:.2f} steps/{DEG_C_CONSOLE}")
+        print(f"TCF difference: {difference:+.2f} steps/{DEG_C_CONSOLE}")
+
+    if correlation is not None:
+        print(f"Position-temperature correlation: {correlation:.4f}")
+
+    clipping_fraction = clipped_count / samples
+    if clipping_fraction > 0:
+        print(
+            "Warning: generated positions were clipped to the configured "
+            "focus interval."
+        )
+    if clipping_fraction > SYNTHETIC_MAX_CLIPPING_FRACTION:
+        print(
+            "Warning: more than "
+            f"{SYNTHETIC_MAX_CLIPPING_FRACTION:.0%} of samples were clipped. "
+            "Consider widening focus_range, reducing the temperature span, "
+            "or using a smaller absolute TCF."
+        )
+
+    print(f"Synthetic CSV: {synthetic_csv}")
+    if dry_run:
+        print("Dry run: no synthetic CSV was written.")
+
+
 def load_synthetic_csv(
     output_csv: Path,
     min_position: int,
     max_position: int,
 ) -> list:
+    """Load valid synthetic points from the per-tube synthetic CSV."""
     path = derive_synthetic_csv_path(output_csv)
     if not path.exists():
         return []
@@ -531,6 +853,7 @@ def load_synthetic_csv(
 
 
 def filter_outliers_studentized(results, threshold: float):
+    """Remove points whose externally studentized residual exceeds threshold."""
     import numpy as np
     import statsmodels.api as sm
 
@@ -571,6 +894,7 @@ def filter_outliers_studentized(results, threshold: float):
 
 
 def write_csv(results, output_csv: Path, fieldnames):
+    """Write result rows to a CSV file."""
     with output_csv.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
             handle,
@@ -582,6 +906,7 @@ def write_csv(results, output_csv: Path, fieldnames):
 
 
 def write_state_json(results, output_json: Path, inverse_slope, slope, intercept):
+    """Write the latest real autofocus result and fitted model to JSON."""
     real_results = [row for row in results if not row.get("_synthetic")]
     if not real_results:
         return False
@@ -610,6 +935,7 @@ def write_state_json(results, output_json: Path, inverse_slope, slope, intercept
 
 
 def style_table(table, fontsize=7.0, header_height=0.058, row_height=0.050):
+    """Apply the common visual style to a Matplotlib table."""
     table.auto_set_font_size(False)
     table.set_fontsize(fontsize)
     for (row, _column), cell in table.get_celld().items():
@@ -639,6 +965,7 @@ def create_chart(
     tube_label: str,
     real_count: int,
 ):
+    """Create the regression chart and return its fitted model values."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -966,6 +1293,63 @@ def create_chart(
     return slope, intercept, inverse_slope, predicted_steps_rounded
 
 
+def run_synthetic_generation(
+    args,
+    tube_label: str,
+    interval: dict,
+    temperature_center: float,
+    output_csv: Path,
+):
+    """Generate or preview the per-tube synthetic data CSV."""
+    synthetic_csv = derive_synthetic_csv_path(output_csv)
+
+    if synthetic_csv.exists() and not args.overwrite and not args.dry_run:
+        raise ValueError(
+            f"Synthetic CSV already exists: {synthetic_csv}. "
+            "Use --overwrite to replace it or --dry-run to preview new data."
+        )
+
+    rows, clipped_count = generate_synthetic_focus_data(
+        focus_center=interval["focus_center"],
+        temperature_center=temperature_center,
+        min_position=interval["min_position"],
+        max_position=interval["max_position"],
+        tcf=args.tcf,
+        samples=args.samples,
+        degrees_of_freedom=args.student_dof,
+        noise_stddev=args.noise_stddev,
+    )
+    recovered_tcf, _slope, _intercept, correlation = calculate_tcf_from_rows(
+        rows
+    )
+
+    print_synthetic_diagnostics(
+        tube_label=tube_label,
+        interval=interval,
+        temperature_center=temperature_center,
+        synthetic_csv=synthetic_csv,
+        tcf=args.tcf,
+        samples=args.samples,
+        degrees_of_freedom=args.student_dof,
+        noise_stddev=args.noise_stddev,
+        rows=rows,
+        clipped_count=clipped_count,
+        recovered_tcf=recovered_tcf,
+        correlation=correlation,
+        dry_run=args.dry_run,
+    )
+
+    if args.dry_run:
+        return
+
+    write_csv(
+        rows,
+        synthetic_csv,
+        ["DateTime", "TemperatureC", "FocuserSteps"],
+    )
+    print("Synthetic CSV written successfully.")
+
+
 def main():
     args = parse_arguments()
 
@@ -980,13 +1364,14 @@ def main():
         args.tube,
         tube_defaults,
     )
-    interval = resolve_focus_interval(args, tube_defaults, config_values)
+    interval = resolve_focus_interval(args, config_values)
 
     tube_label = tube_defaults["label"]
     min_position = interval["min_position"]
     max_position = interval["max_position"]
     x_min = interval["x_min"]
     x_max = interval["x_max"]
+    temperature_center = config_values["temperature_center"]
 
     output_csv_name = (
         args.output_csv
@@ -999,11 +1384,22 @@ def main():
         else tube_defaults["output_state"]
     )
 
+    output_csv = Path(output_csv_name).resolve()
+
+    if args.generate_synthetic_data:
+        run_synthetic_generation(
+            args=args,
+            tube_label=tube_label,
+            interval=interval,
+            temperature_center=temperature_center,
+            output_csv=output_csv,
+        )
+        return
+
     remove_outliers = not args.no_remove_outliers
     start_date = get_start_date(args.last_days)
 
     log_path = Path(args.log_path)
-    output_csv = Path(output_csv_name).resolve()
     outliers_csv = output_csv.with_name(
         output_csv.stem.replace(
             "sharpcap_data_focus",
