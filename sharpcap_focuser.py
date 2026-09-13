@@ -21,6 +21,7 @@ focus_config.properties.example to focus_config.properties and set:
     focus_center = 18700
     focus_range = 3000
     temperature_center = 15.00
+    estimated_tcf = -60.00
 
 The interval is calculated automatically:
 
@@ -30,6 +31,10 @@ The interval is calculated automatically:
 temperature_center is the focuser temperature in degrees Celsius at which
 focus_center is valid. It is used by --generate-synthetic-data.
 
+estimated_tcf is the optional per-tube temperature compensation estimate in
+focuser steps per degree Celsius. Synthetic generation uses --tcf when supplied;
+otherwise it uses estimated_tcf from the selected configuration section.
+
 Command-line flags override the local configuration for one execution.
 
 Features
@@ -38,7 +43,8 @@ Features
 - Filters results by calendar days and focuser step range.
 - Loads optional per-tube focus configuration from a .properties file.
 - Supports temporary --focus-center and --focus-range CLI overrides.
-- Generates synthetic focus-temperature samples from a TCF.
+- Generates synthetic focus-temperature samples from a command-line or
+  per-tube estimated TCF.
 - Optionally removes outliers using externally studentized residuals.
 - Fits a linear regression between temperature and focuser position.
 - Predicts focuser position for a target temperature.
@@ -59,8 +65,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 
-DEG_C_CHART = "\u00B0C"
-DEG_C_CONSOLE = "\u00BAC"
+DEG_C_CHART = "°C"
+DEG_C_CONSOLE = "ºC"
 CONFIG_FILENAME = "focus_config.properties"
 
 SYNTHETIC_DEFAULT_SAMPLES = 12
@@ -72,7 +78,7 @@ SYNTHETIC_MAX_CLIPPING_FRACTION = 0.20
 
 TUBE_DEFAULTS = {
     "main": {
-        "label": "Main tube C8",
+        "label": "Main tube C8 + f/6.3 reducer + EFW7",
         "focus_center": 18700,
         "focus_range": 3000,
         "temperature_center": 15.00,
@@ -81,7 +87,7 @@ TUBE_DEFAULTS = {
         "chart_name": "sharpcap_focus_temperature.png",
     },
     "guide": {
-        "label": "Guide tube 50ED",
+        "label": "Guide tube 50ED + UV/IR-cut filter",
         "focus_center": 347000,
         "focus_range": 50000,
         "temperature_center": 15.00,
@@ -257,7 +263,7 @@ def parse_arguments():
         "--predict-temperature",
         type=finite_float,
         default=None,
-        help="Predict focuser position for this temperature in \u00baC.",
+        help="Predict focuser position for this temperature in ºC.",
     )
     parser.add_argument(
         "--no-remove-outliers",
@@ -286,8 +292,9 @@ def parse_arguments():
         type=finite_float,
         default=None,
         help=(
-            "Temperature compensation factor in focuser steps per degree "
-            "Celsius. Required with --generate-synthetic-data."
+            "Temporary temperature compensation factor override in focuser "
+            "steps per degree Celsius for synthetic generation. Overrides "
+            "estimated_tcf from the selected focus configuration section."
         ),
     )
     parser.add_argument(
@@ -356,12 +363,7 @@ def parse_arguments():
     if args.last_days is not None and args.last_days < 1:
         parser.error("--last-days must be 1 or greater.")
 
-    if args.generate_synthetic_data:
-        if args.tcf is None:
-            parser.error(
-                "--tcf is required with --generate-synthetic-data."
-            )
-    elif args.overwrite:
+    if not args.generate_synthetic_data and args.overwrite:
         parser.error("--overwrite requires --generate-synthetic-data.")
 
     if args.dry_run and not args.generate_synthetic_data:
@@ -405,17 +407,20 @@ def get_default_config_path() -> Path:
 
 
 def load_tube_focus_config(config_path: Path, tube: str, defaults: dict):
-    """Load optional per-tube center/range/temperature configuration.
+    """Load optional per-tube focus and estimated-TCF configuration.
 
-    Missing config files or missing tube sections are non-fatal: built-in
-    defaults are retained. Invalid configured numeric values raise ValueError,
-    so a typo cannot silently contaminate the regression or synthetic data.
+    Missing configuration files or tube sections are non-fatal: built-in focus
+    defaults are retained. estimated_tcf remains None unless it is configured.
+    Invalid numeric values raise ValueError so a typo cannot silently affect
+    regression or synthetic data generation.
     """
     values = {
         "focus_center": defaults["focus_center"],
         "focus_range": defaults["focus_range"],
         "temperature_center": defaults["temperature_center"],
+        "estimated_tcf": None,
         "source": "built-in defaults",
+        "estimated_tcf_source": None,
     }
 
     if not config_path.exists():
@@ -433,6 +438,7 @@ def load_tube_focus_config(config_path: Path, tube: str, defaults: dict):
     if not parser.has_section(tube):
         return values
 
+    source = f"Configuration [{tube}] in {config_path}"
     try:
         if parser.has_option(tube, "focus_center"):
             values["focus_center"] = parser.getint(tube, "focus_center")
@@ -443,19 +449,28 @@ def load_tube_focus_config(config_path: Path, tube: str, defaults: dict):
                 tube,
                 "temperature_center",
             )
+        if parser.has_option(tube, "estimated_tcf"):
+            values["estimated_tcf"] = parser.getfloat(tube, "estimated_tcf")
+            values["estimated_tcf_source"] = source
     except ValueError as error:
         raise ValueError(
             f"Invalid numeric focus configuration in [{tube}] "
             f"of {config_path}: {error}"
         ) from error
 
-    source = f"Configuration [{tube}] in {config_path}"
     validate_center_and_range(
         values["focus_center"],
         values["focus_range"],
         source,
     )
     validate_temperature_center(values["temperature_center"], source)
+
+    if (
+        values["estimated_tcf"] is not None
+        and not math.isfinite(values["estimated_tcf"])
+    ):
+        raise ValueError(f"{source}: estimated_tcf must be a finite number.")
+
     values["source"] = str(config_path)
     return values
 
@@ -513,6 +528,16 @@ def get_start_date(last_days: int | None):
     return today - timedelta(days=last_days - 1)
 
 
+def extract_date_from_filename(file_path: Path) -> str:
+    """Extract YYYY-MM-DD from a SharpCap log filename."""
+    match = re.search(r"Log_(\d{4}-\d{2}-\d{2})T", file_path.name)
+    if match:
+        return match.group(1)
+    return datetime.fromtimestamp(file_path.stat().st_mtime).strftime(
+        "%Y-%m-%d"
+    )
+
+
 def get_log_files(log_path: Path, start_date):
     """Return SharpCap log files passing the optional date filter."""
     log_files = sorted(log_path.glob("Log_*.log"))
@@ -531,16 +556,6 @@ def get_log_files(log_path: Path, start_date):
         if file_date >= start_date:
             result.append(file)
     return result
-
-
-def extract_date_from_filename(file_path: Path) -> str:
-    """Extract YYYY-MM-DD from a SharpCap log filename."""
-    match = re.search(r"Log_(\d{4}-\d{2}-\d{2})T", file_path.name)
-    if match:
-        return match.group(1)
-    return datetime.fromtimestamp(file_path.stat().st_mtime).strftime(
-        "%Y-%m-%d"
-    )
 
 
 def parse_logs(log_files, min_position: int, max_position: int, start_date):
@@ -643,15 +658,7 @@ def generate_synthetic_focus_data(
     degrees_of_freedom: int,
     noise_stddev: float,
 ) -> tuple[list, int]:
-    """Generate synthetic focus-temperature samples.
-
-    Samples are evenly distributed over the previous 365 days. Temperatures
-    follow a smooth annual pattern with a summer maximum. Position residuals
-    use a Student's t distribution normalized to the target standard deviation.
-
-    Returns generated rows and the count of focus positions clipped to the
-    selected focus interval.
-    """
+    """Generate synthetic focus-temperature samples."""
     if samples < 1:
         raise ValueError("Synthetic sample count must be at least 1.")
     if degrees_of_freedom <= 2:
@@ -747,6 +754,7 @@ def print_synthetic_diagnostics(
     temperature_center: float,
     synthetic_csv: Path,
     tcf: float,
+    tcf_source: str,
     samples: int,
     degrees_of_freedom: int,
     noise_stddev: float,
@@ -773,6 +781,7 @@ def print_synthetic_diagnostics(
     )
     print(f"Samples: {samples}")
     print(f"TCF input: {tcf:.2f} steps/{DEG_C_CONSOLE}")
+    print(f"TCF source: {tcf_source}")
     print(f"Student's t degrees of freedom: {degrees_of_freedom}")
     print(f"Noise target standard deviation: {noise_stddev:.1f} steps")
     print(
@@ -1293,12 +1302,37 @@ def create_chart(
     return slope, intercept, inverse_slope, predicted_steps_rounded
 
 
+def resolve_synthetic_tcf(args, config_values: dict, tube: str):
+    """Resolve synthetic-generation TCF and identify its source.
+
+    Precedence:
+      1. Command-line --tcf.
+      2. estimated_tcf in focus_config.properties for the selected tube.
+      3. Error.
+    """
+    if args.tcf is not None:
+        return args.tcf, "command line (--tcf)"
+
+    estimated_tcf = config_values.get("estimated_tcf")
+    if estimated_tcf is None:
+        raise ValueError(
+            "--generate-synthetic-data requires --tcf or estimated_tcf in "
+            f"the selected [{tube}] section of focus_config.properties."
+        )
+
+    return estimated_tcf, (
+        f"{config_values['estimated_tcf_source']} (estimated_tcf)"
+    )
+
+
 def run_synthetic_generation(
     args,
     tube_label: str,
     interval: dict,
     temperature_center: float,
     output_csv: Path,
+    effective_tcf: float,
+    tcf_source: str,
 ):
     """Generate or preview the per-tube synthetic data CSV."""
     synthetic_csv = derive_synthetic_csv_path(output_csv)
@@ -1314,7 +1348,7 @@ def run_synthetic_generation(
         temperature_center=temperature_center,
         min_position=interval["min_position"],
         max_position=interval["max_position"],
-        tcf=args.tcf,
+        tcf=effective_tcf,
         samples=args.samples,
         degrees_of_freedom=args.student_dof,
         noise_stddev=args.noise_stddev,
@@ -1328,7 +1362,8 @@ def run_synthetic_generation(
         interval=interval,
         temperature_center=temperature_center,
         synthetic_csv=synthetic_csv,
-        tcf=args.tcf,
+        tcf=effective_tcf,
+        tcf_source=tcf_source,
         samples=args.samples,
         degrees_of_freedom=args.student_dof,
         noise_stddev=args.noise_stddev,
@@ -1387,12 +1422,19 @@ def main():
     output_csv = Path(output_csv_name).resolve()
 
     if args.generate_synthetic_data:
+        effective_tcf, tcf_source = resolve_synthetic_tcf(
+            args,
+            config_values,
+            args.tube,
+        )
         run_synthetic_generation(
             args=args,
             tube_label=tube_label,
             interval=interval,
             temperature_center=temperature_center,
             output_csv=output_csv,
+            effective_tcf=effective_tcf,
+            tcf_source=tcf_source,
         )
         return
 

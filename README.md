@@ -9,32 +9,33 @@ The script supports two optical tubes through `--tube {main,guide}` and can load
 a persistent, local focus configuration for each tube from
 `focus_config.properties`.
 
-| Tube | Hardware | Default focus center | Default interval | State JSON |
-|---|---|---:|---:|---|
-| `main` (default) | C8 + ASI2600MC Pro + f/6.3 reducer | 18,700 steps | 17,200–20,200 | `sharpcap_focus_state.json` |
-| `guide` | Sky-Watcher 50ED + ASI224MC | 347,000 steps | 322,000–372,000 | `sharpcap_focus_state_guide.json` |
+| Tube | Optical train | Focuser | Default focus center | Default interval | State JSON |
+|---|---|---|---:|---:|---|
+| `main` (default) | Celestron C8 + f/6.3 focal reducer + ZWO EFW7 + ZWO ASI2600MC Pro | ZWO EAF | 18,706 steps | 17,206–20,206 | `sharpcap_focus_state.json` |
+| `guide` | Sky-Watcher 50ED + UV/IR-cut filter + ZWO ASI224MC | ZWO EAF | 391,982 steps | 366,982–416,982 | `sharpcap_focus_state_guide.json` |
 
 > **Guide tube note:** the 50ED EAF (`ASCOM.EAF_2.Focuser`) can have a much
 > larger mechanical range than the analysis interval. The script filters
 > autofocus results using the configured focus interval; the EAF hardware limit
-> remains independent. If the guide optical train changes—for example, after
-> adding a UV/IR-cut filter—refocus, determine a new stable centre, record its
-> temperature, and update the `[guide]` configuration before mixing the new data
-> with earlier sessions.
+> remains independent. The guide profile refers to the installed optical train:
+> Sky-Watcher 50ED + UV/IR-cut filter + ZWO ASI224MC. If this optical train
+> changes, refocus, determine a new stable centre, record its temperature, and
+> update the `[guide]` configuration before mixing new data with earlier
+> sessions.
 
 ## What it does
 
 - Reads SharpCap `Log_*.log` files.
 - Extracts autofocus results with timestamp, temperature and best-focus position.
 - Filters observations by a per-tube focus interval.
-- Reads persistent centres, interval widths and reference temperatures from
-  `focus_config.properties`.
+- Reads persistent centres, interval widths, reference temperatures and
+  estimated TCF values from `focus_config.properties`.
 - Supports temporary `--focus-center` and `--focus-range` command-line overrides.
 - Filters data by the last N natural calendar days.
 - Optionally removes outliers using externally studentized residuals.
 - Fits a linear regression between temperature and focuser position.
-- Calculates the inverse slope as **TCF** (temperature compensation factor, in
-  steps/°C).
+- Calculates the temperature compensation factor (TCF) from the fitted
+  regression, in steps/°C.
 - Predicts focuser position for a target temperature.
 - Generates synthetic focus/temperature samples for a selected tube.
 - Exports cleaned results to CSV and removed outliers to a separate CSV.
@@ -58,17 +59,34 @@ them.
 Example:
 
 ```ini
+; Local per-tube focus configuration.
+; This file is intentionally ignored by Git.
+;
+; focus_center is the EAF position in steps at temperature_center.
+; focus_range is the allowed full focuser interval width in EAF steps.
+; temperature_center is the focuser temperature in degrees Celsius at which
+; focus_center is valid. It is the reference point used to generate synthetic
+; focus-temperature data.
+; estimated_tcf is the estimated temperature compensation factor in EAF
+; steps per degree Celsius. It is used for synthetic data generation unless
+; --tcf is supplied as an override.
+
 [main]
-; C8 + ASI2600MC Pro + f/6.3 reducer
-focus_center = 18700
+; Optical train: Celestron C8 + f/6.3 focal reducer + ZWO EFW7
+; + ZWO ASI2600MC Pro.
+; Focuser: ZWO EAF.
+focus_center = 18706
 focus_range = 3000
-temperature_center = 15.00
+temperature_center = 19.43
+estimated_tcf = -60.00
 
 [guide]
-; Sky-Watcher 50ED + ASI224MC
-focus_center = 347000
+; Optical train: Sky-Watcher 50ED + UV/IR-cut filter + ZWO ASI224MC.
+; Focuser: ZWO EAF.
+focus_center = 391982
 focus_range = 50000
-temperature_center = 15.00
+temperature_center = 18.70
+estimated_tcf = -977.18
 ```
 
 For each tube, the script derives the accepted focus interval as:
@@ -87,21 +105,39 @@ centred exactly on `focus_center`.
 
 `temperature_center` is the focuser temperature in °C at which
 `focus_center` is valid. Write it with two decimal places, for example
-`15.00`. It anchors the synthetic focus-temperature relation generated with
+`19.43`. It anchors the synthetic focus-temperature relation generated with
 `--generate-synthetic-data`.
+
+`estimated_tcf` is an optional, per-tube initial temperature compensation
+estimate in EAF steps/°C. It is used as the default by
+`--generate-synthetic-data` when `--tcf` is not supplied. It does not replace
+the `model_tcf` derived from real autofocus observations and written to the
+state JSON.
+
+For each generation run, the effective TCF is resolved in this order:
+
+1. `--tcf`, when supplied on the command line.
+2. `estimated_tcf` from the selected `[main]` or `[guide]` configuration
+   section.
+3. An error if neither is available.
+
+> **TCF sign:** for the installed C8 and 50ED optical trains, the expected TCF
+> is normally negative: focus moves inward, to fewer EAF steps, as temperature
+> rises.
 
 For the supplied main-tube values:
 
 ```text
-focus_center       = 18700
+focus_center       = 18706
 focus_range        = 3000
-temperature_center = 15.00
+temperature_center = 19.43
+estimated_tcf      = -60.00
 ```
 
 the calculated focus range is:
 
 ```text
-17200–20200
+17206–20206
 ```
 
 ### Why the configuration is external
@@ -112,9 +148,9 @@ position can displace the measured best-focus position substantially. These
 changes belong in local configuration, not as code edits.
 
 For example, a C8 configuration whose focus changes from about 25,500 to
-18,700 after an optical-train modification has shifted by −6,800 steps. With
+18,706 after an optical-train modification has shifted by −6,794 steps. With
 the same 3,000-step interval width, the useful range moves from `24,000–27,000`
-to `17,200–20,200`. Establish the new best focus, record the focuser
+to `17,206–20,206`. Establish the new best focus, record the focuser
 temperature as `temperature_center`, then update the affected local section.
 
 ### Configuration precedence
@@ -155,24 +191,34 @@ make it persistent.
 
 ## Regression model
 
-The chart uses the linear model:
+The analysis fits focuser position as a linear function of temperature:
 
 ```text
-T = k·s + b
+P = m * T + c
 ```
 
 where:
 
+- `P` is focuser position in EAF steps.
 - `T` is focuser temperature in °C.
-- `s` is focuser position in steps.
-- `k` is the slope in °C/step (`slope` in the source).
-- `TCF = 1/k` is the temperature compensation factor in steps/°C
-  (`inverse_slope` in the source).
-- `b` is the intercept in °C.
+- `m` is the temperature compensation factor, TCF, in steps/°C.
+- `c` is the position intercept in steps.
 
-> **TCF sign:** for the C8 + f/6.3 reducer and 50ED configurations, the TCF
-> is normally negative: focus moves inward, to fewer EAF steps, as temperature
-> rises. A positive TCF means outward motion with warming.
+For compatibility with the state JSON, the script also stores the inverse
+relation:
+
+```text
+T = k * P + b
+```
+
+where:
+
+- `k = 1 / TCF` is `model_inv_tcf`, in °C/step.
+- `b` is `model_intercept_c`, in °C.
+
+The generated JSON field `model_tcf` is the measured TCF from the fitted
+autofocus data. It must not be confused with `estimated_tcf`, which is the
+local configuration estimate used to seed synthetic-data generation.
 
 ## Synthetic data
 
@@ -218,7 +264,8 @@ where:
 - \(P_{\mathrm{center}}\) is `focus_center`.
 - \(T_i\) is the generated focuser temperature.
 - \(T_{\mathrm{center}}\) is `temperature_center`.
-- TCF is supplied with `--tcf` in steps/°C.
+- TCF is the effective value in steps/°C: `--tcf` when supplied, otherwise
+  `estimated_tcf` from the selected tube configuration.
 - \(\varepsilon_i\) is Student's t-distributed random noise.
 
 The generator distributes samples over the preceding 365 days and models a
@@ -234,37 +281,118 @@ clipping fraction indicates that the selected TCF, temperature range or
 
 ### Generation examples
 
-Generate the default 12 samples for the main tube. `--tcf` is required:
+The examples below use `estimated_tcf` from `focus_config.properties`.
+Use `--tcf` only when a temporary value is required for a test or
+recalibration.
+
+### Main tube: `--tube main`
+
+The `main` profile represents the Celestron C8 optical train with f/6.3 focal
+reducer, ZWO EFW7 and ZWO ASI2600MC Pro. Its local configuration supplies the
+reference focus, temperature and `estimated_tcf`.
+
+Preview main-tube generation without writing a CSV:
 
 ```powershell
 .venv\Scripts\python.exe sharpcap_focuser.py `
   --tube main `
   --generate-synthetic-data `
-  --tcf -60
-```
-
-Preview a main-tube result without writing the CSV:
-
-```powershell
-.venv\Scripts\python.exe sharpcap_focuser.py `
-  --tube main `
-  --generate-synthetic-data `
-  --tcf -60 `
+  --samples 12 `
   --dry-run
 ```
 
-Generate 24 guide-tube samples with heavier-tailed variation and a larger
-focus noise appropriate for its larger step range:
+Generate or replace the main-tube synthetic CSV:
+
+```powershell
+.venv\Scripts\python.exe sharpcap_focuser.py `
+  --tube main `
+  --generate-synthetic-data `
+  --samples 12 `
+  --overwrite
+```
+
+Representative main-tube data:
+
+| DateTime | TemperatureC | FocuserSteps |
+|---|---:|---:|
+| 2025-09-13 12:53:34 | 6.36 | 19493 |
+| 2025-10-16 17:15:23 | 10.63 | 19248 |
+| 2025-11-18 21:37:12 | 16.94 | 18857 |
+| 2025-12-22 01:59:01 | 20.37 | 18650 |
+| 2026-01-24 06:20:50 | 24.71 | 18376 |
+| 2026-02-26 10:42:39 | 31.92 | 17975 |
+| 2026-03-31 15:04:28 | 33.67 | 17845 |
+| 2026-05-03 19:26:17 | 29.81 | 18084 |
+| 2026-06-05 23:48:06 | 19.30 | 18715 |
+| 2026-07-09 04:09:55 | 12.56 | 19106 |
+| 2026-08-11 08:31:44 | 8.43 | 19361 |
+| 2026-09-13 12:53:34 | 5.58 | 19540 |
+
+The table was generated with the `main` profile. Its recovered TCF is
+approximately `-62.2 steps/°C`, consistent with the configured
+`estimated_tcf = -60.00`. The small difference comes from the generated
+Student's t-distributed position noise and the limited sample count.
+
+### Guide tube: `--tube guide`
+
+The `guide` profile represents the Sky-Watcher 50ED optical train with its
+UV/IR-cut filter and ZWO ASI224MC. Its `estimated_tcf` is a starting value for
+that installed configuration and should be recalibrated after an optical change.
+
+Preview guide-tube generation without writing a CSV:
 
 ```powershell
 .venv\Scripts\python.exe sharpcap_focuser.py `
   --tube guide `
   --generate-synthetic-data `
-  --tcf -1000 `
-  --samples 24 `
-  --student-dof 6 `
-  --noise-stddev 100
+  --samples 12 `
+  --noise-stddev 500 `
+  --dry-run
 ```
+
+Generate or replace the guide-tube synthetic CSV:
+
+```powershell
+.venv\Scripts\python.exe sharpcap_focuser.py `
+  --tube guide `
+  --generate-synthetic-data `
+  --samples 12 `
+  --noise-stddev 500 `
+  --overwrite
+```
+
+Representative guide-tube data:
+
+| DateTime | TemperatureC | FocuserSteps |
+|---|---:|---:|
+| 2025-09-13 13:15:00 | 4.71 | 405638 |
+| 2025-10-16 17:36:49 | 6.49 | 403919 |
+| 2025-11-18 21:58:38 | 15.11 | 395487 |
+| 2025-12-22 02:20:27 | 21.52 | 389224 |
+| 2026-01-24 06:42:16 | 26.78 | 384082 |
+| 2026-02-26 11:04:05 | 30.29 | 380639 |
+| 2026-03-31 15:25:54 | 32.53 | 378469 |
+| 2026-05-03 19:47:43 | 27.87 | 383034 |
+| 2026-06-06 00:09:32 | 20.87 | 389868 |
+| 2026-07-09 04:31:21 | 12.97 | 397578 |
+| 2026-08-11 08:53:10 | 6.51 | 403856 |
+| 2026-09-13 13:15:00 | 3.64 | 406704 |
+
+The recovered guide relation is approximately:
+
+```text
+FocuserSteps = -976.87 * TemperatureC + 410245.58
+```
+
+The recovered TCF is approximately `-976.87 steps/°C`, consistent with
+`estimated_tcf = -977.18`. The small residual variation has an RMS of about
+13 steps. All sample positions are inside the configured interval
+`366982–416982`, so this example has no focus-range clipping.
+
+The example tables are real generator outputs. Later runs can differ because
+the generator uses seasonal temperature sampling and Student's t-distributed
+focus-position noise. Use `--dry-run` to inspect the active configuration and
+diagnostics before replacing an existing CSV.
 
 If the target synthetic CSV already exists, generation stops to protect it.
 Use `--overwrite` explicitly to replace it:
@@ -273,7 +401,6 @@ Use `--overwrite` explicitly to replace it:
 .venv\Scripts\python.exe sharpcap_focuser.py `
   --tube main `
   --generate-synthetic-data `
-  --tcf -60 `
   --overwrite
 ```
 
@@ -282,16 +409,16 @@ Use `--overwrite` explicitly to replace it:
 | Option | Default | Description |
 |---|---:|---|
 | `--generate-synthetic-data` | Off | Generate synthetic data for the selected tube and exit |
-| `--tcf TCF` | Required in generation mode | Temperature compensation factor in steps/°C |
+| `--tcf TCF` | None | Temporary TCF override in steps/°C for synthetic generation; overrides the selected tube's `estimated_tcf` |
 | `--samples N` | `12` | Number of synthetic samples to generate |
 | `--student-dof N` | `8` | Student's t degrees of freedom; lower values create heavier tails and more extreme synthetic deviations; must be greater than 2 |
-| `--noise-stddev STEPS` | `12.0` | Target standard deviation of the synthetic position noise, in focuser steps |
+| `--noise-stddev STEPS` | `12.0` | Target standard deviation of synthetic position noise, in focuser steps |
 | `--dry-run` | Off | Preview synthetic generation and diagnostics without writing a CSV |
 | `--overwrite` | Off | Replace an existing synthetic CSV |
 
-The console summary displays the input TCF, recovered TCF fitted from the
-generated points, their difference, position-temperature correlation and the
-number of samples clipped to the focus interval.
+The console summary displays the effective TCF and its source, the recovered
+TCF fitted from generated points, their difference, position-temperature
+correlation and the number of samples clipped to the focus interval.
 
 ### CSV format
 
@@ -310,9 +437,9 @@ Expelled synthetic points are included in the removed-outliers CSV with
 
 > **After an optical change:** do not blindly reuse a synthetic CSV from the
 > former train. Establish a new `focus_center` and `temperature_center`, set a
-> suitable interval and generate new samples using the expected or provisional
-> TCF. Replace the table after sufficient genuine autofocus observations have
-> been collected.
+> suitable interval, update `estimated_tcf` if required, and generate new
+> samples. Replace the synthetic CSV after sufficient genuine autofocus
+> observations have been collected.
 
 ## JSON state file
 
@@ -340,9 +467,9 @@ thermal model:
 | `focus_ref` | Focuser position at the reference point in steps |
 | `last_temp_applied` | Temperature at which the last correction was applied |
 | `last_focus_applied` | Focuser position of the last applied correction |
-| `model_tcf` | TCF, \(1/k\), in steps/°C |
-| `model_inv_tcf` | Regression slope \(k\) in °C/step |
-| `model_intercept_c` | Regression intercept \(b\) in °C |
+| `model_tcf` | Measured TCF, in steps/°C |
+| `model_inv_tcf` | Inverse TCF, in °C/step |
+| `model_intercept_c` | Regression intercept in °C for the inverse relation |
 
 `last_temp_applied` and `last_focus_applied` are separate from
 `temp_ref`/`focus_ref` so the sequencer can maintain its live correction state
@@ -461,10 +588,10 @@ changing the focus filter interval:
 ```powershell
 python sharpcap_focuser.py `
   --tube main `
-  --focus-center 18700 `
+  --focus-center 18706 `
   --focus-range 3000 `
-  --x-min 17200 `
-  --x-max 20200 `
+  --x-min 17206 `
+  --x-max 20206 `
   --y-min -10 `
   --y-max 40 `
   --predict-temperature 12.5
@@ -506,7 +633,7 @@ python sharpcap_focuser.py `
 | `--no-remove-outliers` | Off | Disable outlier removal |
 | `--studentized-threshold` | `3.0` | Absolute studentized-residual rejection threshold |
 | `--generate-synthetic-data` | Off | Generate synthetic data for the selected tube and exit |
-| `--tcf` | None | Required in generation mode; TCF in steps/°C |
+| `--tcf` | None | Temporary TCF override in steps/°C for synthetic generation; overrides the selected tube's `estimated_tcf` |
 | `--samples` | `12` | Number of synthetic samples |
 | `--student-dof` | `8` | Student's t degrees of freedom for synthetic position noise |
 | `--noise-stddev` | `12.0` | Synthetic focus-position noise target standard deviation in steps |
@@ -543,35 +670,49 @@ Use `--log-path` to select another folder.
 
 ## Typical workflow
 
-1. Set `focus_center`, `focus_range` and `temperature_center` for each
-   installed optical train in `focus_config.properties`.
-2. After a new train configuration, generate a provisional synthetic dataset:
+1. Set `focus_center`, `focus_range`, `temperature_center` and
+   `estimated_tcf` for each installed optical train in
+   `focus_config.properties`.
+
+2. After a new train configuration, preview and then generate a provisional
+   synthetic dataset:
+
    ```powershell
-   python sharpcap_focuser.py --tube main --generate-synthetic-data --tcf -60
+   python sharpcap_focuser.py --tube main --generate-synthetic-data --dry-run
+   python sharpcap_focuser.py --tube main --generate-synthetic-data --overwrite
    ```
+
 3. Run several real autofocus operations during one or more sessions.
+
 4. Generate or refresh the real-data model:
+
    ```powershell
    python sharpcap_focuser.py --tube main
    python sharpcap_focuser.py --tube guide
    ```
+
 5. Inspect the per-tube CSV, chart, state JSON and any removed-outliers CSV.
-6. Review `k`, TCF and predicted focus at the temperature of interest.
+
+6. Review TCF and predicted focus at the temperature of interest.
+
 7. Let the sibling sequencer refresh and use the appropriate state JSON during
    nightly operation.
+
 8. After enough valid real autofocus observations cover the normal seasonal
    range, remove the corresponding synthetic CSV.
+
 9. After changing camera, reducer, filter, spacing or focuser mechanics,
    establish a new focus reference, update the appropriate `.properties`
-   section and generate a fresh temporary dataset if required.
+   section—including `estimated_tcf` when necessary—and generate a fresh
+   temporary dataset if required.
 
 ## License
 
-This project is licensed under the **GNU General Public License v3.0 or later**.
+This project is licensed under the GNU General Public License v3.0 or later.
 See `LICENSE.txt` for the full text.
 
 ## Author
 
-**David González López-Tercero**  
+David González López-Tercero  
 Website: [dragonit.es](https://dragonit.es)  
 Email: [davidglt@dragonit.es](mailto:davidglt@dragonit.es)
