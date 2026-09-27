@@ -13,7 +13,7 @@ chart with regression, prediction, legend, and summary tables.
 
 Focus configuration
 -------------------
-Per-tube focus references and analysis intervals can be stored in the optional
+Per-tube focus references and analysis intervals are stored in the required
 focus_config.properties file beside this script. Copy
 focus_config.properties.example to focus_config.properties and set:
 
@@ -41,7 +41,7 @@ Features
 --------
 - Parses SharpCap log files and extracts autofocus results.
 - Filters results by calendar days and focuser step range.
-- Loads optional per-tube focus configuration from a .properties file.
+- Loads per-tube focus configuration from a .properties file.
 - Supports temporary --focus-center and --focus-range CLI overrides.
 - Generates synthetic focus-temperature samples from a command-line or
   per-tube estimated TCF.
@@ -59,8 +59,11 @@ import configparser
 import csv
 import json
 import math
+import os
 import random
 import re
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -79,18 +82,12 @@ SYNTHETIC_MAX_CLIPPING_FRACTION = 0.20
 TUBE_DEFAULTS = {
     "main": {
         "label": "Main tube C8 + f/6.3 reducer + EFW7",
-        "focus_center": 18700,
-        "focus_range": 3000,
-        "temperature_center": 15.00,
         "output_csv": "sharpcap_data_focus.csv",
         "output_state": "sharpcap_focus_state.json",
         "chart_name": "sharpcap_focus_temperature.png",
     },
     "guide": {
         "label": "Guide tube 50ED + UV/IR-cut filter",
-        "focus_center": 347000,
-        "focus_range": 50000,
-        "temperature_center": 15.00,
         "output_csv": "sharpcap_data_focus_guide.csv",
         "output_state": "sharpcap_focus_state_guide.json",
         "chart_name": "sharpcap_focus_temperature_guide.png",
@@ -330,6 +327,15 @@ def parse_arguments():
         ),
     )
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Random seed for reproducible synthetic temperatures and focus "
+            "positions. By default, each run uses a different sequence."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help=(
@@ -406,25 +412,18 @@ def get_default_config_path() -> Path:
     return Path(__file__).resolve().with_name(CONFIG_FILENAME)
 
 
-def load_tube_focus_config(config_path: Path, tube: str, defaults: dict):
-    """Load optional per-tube focus and estimated-TCF configuration.
+def load_tube_focus_config(config_path: Path, tube: str):
+    """Load required per-tube focus configuration and optional estimated TCF.
 
-    Missing configuration files or tube sections are non-fatal: built-in focus
-    defaults are retained. estimated_tcf remains None unless it is configured.
-    Invalid numeric values raise ValueError so a typo cannot silently affect
-    regression or synthetic data generation.
+    Missing files or tube sections raise explicit errors. Unspecified options
+    for the focus reference raise explicit errors. estimated_tcf remains None
+    unless configured. Invalid numeric values raise ValueError so a typo
+    cannot silently affect regression or synthetic data generation.
     """
-    values = {
-        "focus_center": defaults["focus_center"],
-        "focus_range": defaults["focus_range"],
-        "temperature_center": defaults["temperature_center"],
-        "estimated_tcf": None,
-        "source": "built-in defaults",
-        "estimated_tcf_source": None,
-    }
-
-    if not config_path.exists():
-        return values
+    if not config_path.is_file():
+        raise FileNotFoundError(
+            f"Focus configuration file does not exist: {config_path}"
+        )
 
     parser = configparser.ConfigParser()
     try:
@@ -436,19 +435,36 @@ def load_tube_focus_config(config_path: Path, tube: str, defaults: dict):
         ) from error
 
     if not parser.has_section(tube):
-        return values
+        raise ValueError(
+            f"Focus configuration section [{tube}] is missing from "
+            f"{config_path}."
+        )
 
     source = f"Configuration [{tube}] in {config_path}"
+    required_options = ("focus_center", "focus_range", "temperature_center")
+    missing_options = [
+        option for option in required_options
+        if not parser.has_option(tube, option)
+    ]
+    if missing_options:
+        missing = ", ".join(missing_options)
+        raise ValueError(
+            f"Required option(s) {missing} missing from section [{tube}] "
+            f"in {config_path}."
+        )
+
+    values = {
+        "estimated_tcf": None,
+        "source": str(config_path),
+        "estimated_tcf_source": None,
+    }
     try:
-        if parser.has_option(tube, "focus_center"):
-            values["focus_center"] = parser.getint(tube, "focus_center")
-        if parser.has_option(tube, "focus_range"):
-            values["focus_range"] = parser.getint(tube, "focus_range")
-        if parser.has_option(tube, "temperature_center"):
-            values["temperature_center"] = parser.getfloat(
-                tube,
-                "temperature_center",
-            )
+        values["focus_center"] = parser.getint(tube, "focus_center")
+        values["focus_range"] = parser.getint(tube, "focus_range")
+        values["temperature_center"] = parser.getfloat(
+            tube,
+            "temperature_center",
+        )
         if parser.has_option(tube, "estimated_tcf"):
             values["estimated_tcf"] = parser.getfloat(tube, "estimated_tcf")
             values["estimated_tcf_source"] = source
@@ -481,7 +497,6 @@ def resolve_focus_interval(args, config_values: dict):
     Precedence:
       1. Temporary --focus-center plus optional --focus-range.
       2. Per-tube focus_config.properties values.
-      3. Built-in TUBE_DEFAULTS values.
     """
     if args.focus_center is not None:
         focus_center = args.focus_center
@@ -540,14 +555,21 @@ def extract_date_from_filename(file_path: Path) -> str:
 
 def get_log_files(log_path: Path, start_date):
     """Return SharpCap log files passing the optional date filter."""
+    if not log_path.exists():
+        raise FileNotFoundError(
+            f"SharpCap log directory does not exist: {log_path}"
+        )
+    if not log_path.is_dir():
+        raise NotADirectoryError(
+            f"SharpCap log path is not a directory: {log_path}"
+        )
+
     log_files = sorted(log_path.glob("Log_*.log"))
     if start_date is None:
         return log_files
 
     result = []
     for file in log_files:
-        if datetime.fromtimestamp(file.stat().st_mtime).date() < start_date:
-            continue
         file_date_str = extract_date_from_filename(file)
         try:
             file_date = datetime.strptime(file_date_str, "%Y-%m-%d").date()
@@ -556,6 +578,23 @@ def get_log_files(log_path: Path, start_date):
         if file_date >= start_date:
             result.append(file)
     return result
+
+
+@contextmanager
+def atomic_output_path(destination: Path):
+    """Yield a same-directory temporary path and atomically replace destination."""
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.stem}.",
+        suffix=destination.suffix,
+        dir=destination.parent,
+    )
+    os.close(descriptor)
+    temporary_path = Path(temporary_name)
+    try:
+        yield temporary_path
+        os.replace(temporary_path, destination)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def parse_logs(log_files, min_position: int, max_position: int, start_date):
@@ -622,11 +661,15 @@ def derive_synthetic_csv_path(output_csv: Path) -> Path:
     return output_csv.with_name(name)
 
 
-def sample_student_t(degrees_of_freedom: int) -> float:
+def sample_student_t(
+    degrees_of_freedom: int,
+    rng: random.Random | None = None,
+) -> float:
     """Return a Student's t sample without requiring scipy or numpy."""
-    normal_sample = random.gauss(0.0, 1.0)
+    generator = rng or random
+    normal_sample = generator.gauss(0.0, 1.0)
     chi_square = sum(
-        random.gauss(0.0, 1.0) ** 2
+        generator.gauss(0.0, 1.0) ** 2
         for _ in range(degrees_of_freedom)
     )
     return normal_sample / math.sqrt(chi_square / degrees_of_freedom)
@@ -635,13 +678,15 @@ def sample_student_t(degrees_of_freedom: int) -> float:
 def calculate_synthetic_temperature(
     fraction: float,
     temperature_center: float,
+    rng: random.Random | None = None,
 ) -> float:
     """Return a seasonal temperature with summer maximum and variation."""
+    generator = rng or random
     seasonal = (
         SYNTHETIC_DEFAULT_TEMPERATURE_AMPLITUDE
         * math.cos(2.0 * math.pi * (fraction - 0.50))
     )
-    random_variation = random.gauss(
+    random_variation = generator.gauss(
         0.0,
         SYNTHETIC_DEFAULT_TEMPERATURE_NOISE_STDDEV,
     )
@@ -657,6 +702,7 @@ def generate_synthetic_focus_data(
     samples: int,
     degrees_of_freedom: int,
     noise_stddev: float,
+    seed: int | None = None,
 ) -> tuple[list, int]:
     """Generate synthetic focus-temperature samples."""
     if samples < 1:
@@ -678,6 +724,7 @@ def generate_synthetic_focus_data(
     end_time = datetime.now().replace(microsecond=0)
     start_time = end_time - timedelta(days=365)
     time_span = end_time - start_time
+    rng = random.Random(seed)
     rows = []
     clipped_count = 0
 
@@ -687,11 +734,12 @@ def generate_synthetic_focus_data(
         temperature = calculate_synthetic_temperature(
             fraction,
             temperature_center,
+            rng,
         )
         noise = (
             noise_stddev
             * variance_normalizer
-            * sample_student_t(degrees_of_freedom)
+            * sample_student_t(degrees_of_freedom, rng)
         )
         expected_position = (
             focus_center + tcf * (temperature - temperature_center)
@@ -760,6 +808,7 @@ def print_synthetic_diagnostics(
     noise_stddev: float,
     rows: list,
     clipped_count: int,
+    seed: int | None,
     recovered_tcf,
     correlation,
     dry_run: bool,
@@ -784,6 +833,8 @@ def print_synthetic_diagnostics(
     print(f"TCF source: {tcf_source}")
     print(f"Student's t degrees of freedom: {degrees_of_freedom}")
     print(f"Noise target standard deviation: {noise_stddev:.1f} steps")
+    if seed is not None:
+        print(f"Random seed: {seed}")
     print(
         f"Generated temperature range: {min(temperatures):.2f} to "
         f"{max(temperatures):.2f} {DEG_C_CONSOLE}"
@@ -904,24 +955,58 @@ def filter_outliers_studentized(results, threshold: float):
 
 def write_csv(results, output_csv: Path, fieldnames):
     """Write result rows to a CSV file."""
-    with output_csv.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=fieldnames,
-            extrasaction="ignore",
-        )
-        writer.writeheader()
-        writer.writerows(results)
+    with atomic_output_path(output_csv) as temporary_path:
+        with temporary_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=fieldnames,
+                extrasaction="ignore",
+            )
+            writer.writeheader()
+            writer.writerows(results)
 
 
 def write_state_json(results, output_json: Path, inverse_slope, slope, intercept):
-    """Write the latest real autofocus result and fitted model to JSON."""
+    """Write a valid state or explicitly invalidate a stale previous state."""
     real_results = [row for row in results if not row.get("_synthetic")]
     if not real_results:
+        state = {}
+        if output_json.exists():
+            try:
+                state = json.loads(output_json.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    f"Cannot invalidate malformed state JSON {output_json}: "
+                    f"{error}"
+                ) from error
+            if not isinstance(state, dict):
+                raise ValueError(
+                    f"Cannot invalidate state JSON that is not an object: "
+                    f"{output_json}"
+                )
+        state.update(
+            {
+                "valid": False,
+                "status": "invalid",
+                "invalid_reason": (
+                    "No valid autofocus reference was found in the latest "
+                    "analysis."
+                ),
+                "updated_at": datetime.now().astimezone().isoformat(),
+            }
+        )
+        with atomic_output_path(output_json) as temporary_path:
+            temporary_path.write_text(
+                json.dumps(state, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
         return False
 
     last_result = real_results[-1]
     state = {
+        "valid": True,
+        "status": "valid",
+        "updated_at": datetime.now().astimezone().isoformat(),
         "timestamp_ref": last_result["DateTime"],
         "temp_ref": round(float(last_result["TemperatureC"]), 2),
         "focus_ref": int(last_result["FocuserSteps"]),
@@ -937,9 +1022,11 @@ def write_state_json(results, output_json: Path, inverse_slope, slope, intercept
             None if intercept is None else round(float(intercept), 3)
         ),
     }
-    with output_json.open("w", encoding="utf-8") as handle:
-        json.dump(state, handle, indent=2, ensure_ascii=False)
-        handle.write("\n")
+    with atomic_output_path(output_json) as temporary_path:
+        temporary_path.write_text(
+            json.dumps(state, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
     return True
 
 
@@ -1292,13 +1379,16 @@ def create_chart(
     )
     style_table(focus_table)
 
-    fig.savefig(
-        chart_path,
-        dpi=130,
-        bbox_inches="tight",
-        bbox_extra_artists=(legend,),
-    )
-    plt.close(fig)
+    try:
+        with atomic_output_path(chart_path) as temporary_path:
+            fig.savefig(
+                temporary_path,
+                dpi=130,
+                bbox_inches="tight",
+                bbox_extra_artists=(legend,),
+            )
+    finally:
+        plt.close(fig)
     return slope, intercept, inverse_slope, predicted_steps_rounded
 
 
@@ -1352,6 +1442,7 @@ def run_synthetic_generation(
         samples=args.samples,
         degrees_of_freedom=args.student_dof,
         noise_stddev=args.noise_stddev,
+        seed=args.seed,
     )
     recovered_tcf, _slope, _intercept, correlation = calculate_tcf_from_rows(
         rows
@@ -1369,6 +1460,7 @@ def run_synthetic_generation(
         noise_stddev=args.noise_stddev,
         rows=rows,
         clipped_count=clipped_count,
+        seed=args.seed,
         recovered_tcf=recovered_tcf,
         correlation=correlation,
         dry_run=args.dry_run,
@@ -1397,7 +1489,6 @@ def main():
     config_values = load_tube_focus_config(
         config_path,
         args.tube,
-        tube_defaults,
     )
     interval = resolve_focus_interval(args, config_values)
 
@@ -1621,6 +1712,17 @@ def main():
         print(f"Chart created: {chart_path}")
     else:
         print("Chart was not created: no real autofocus results were found.")
+        write_state_json(
+            combined,
+            state_json,
+            None,
+            None,
+            None,
+        )
+        print(
+            f"State JSON marked invalid: {state_json}; "
+            "no valid autofocus reference was found."
+        )
 
 
 if __name__ == "__main__":

@@ -52,9 +52,11 @@ Copy the tracked template to create your local configuration:
 Copy-Item focus_config.properties.example focus_config.properties
 ```
 
-`focus_config.properties` is intentionally excluded by `.gitignore`, so each
-observatory can maintain its own optical-train references without committing
-them.
+`focus_config.properties` is required at runtime and intentionally excluded by
+`.gitignore`, so each observatory can maintain its own optical-train references
+without committing them. The selected tube's `[main]` or `[guide]` section must
+exist. Copy the example before running the script; values present in that local
+section override the built-in values.
 
 Example:
 
@@ -159,8 +161,13 @@ The script resolves focus limits using this order, from highest to lowest
 priority:
 
 1. `--focus-center` with optional `--focus-range`, for a one-run override.
-2. The selected `[main]` or `[guide]` section in `focus_config.properties`.
-3. Internal fallback defaults in `TUBE_DEFAULTS`.
+2. The required `focus_center`, `focus_range`, and `temperature_center` values
+   in the selected `[main]` or `[guide]` section in
+   `focus_config.properties`.
+
+The configuration file, selected tube section, and all three focus reference
+values are required. If any are missing, the script stops with an explicit
+error rather than silently using a different optical-train reference.
 
 `--focus-center` and `--focus-range` are deliberately temporary: they do not
 rewrite `focus_config.properties`. After a new value has been verified across
@@ -413,12 +420,15 @@ Use `--overwrite` explicitly to replace it:
 | `--samples N` | `12` | Number of synthetic samples to generate |
 | `--student-dof N` | `8` | Student's t degrees of freedom; lower values create heavier tails and more extreme synthetic deviations; must be greater than 2 |
 | `--noise-stddev STEPS` | `12.0` | Target standard deviation of synthetic position noise, in focuser steps |
+| `--seed N` | None | Reproduce the same generated temperatures and focus positions; generated timestamps remain relative to the run date |
 | `--dry-run` | Off | Preview synthetic generation and diagnostics without writing a CSV |
 | `--overwrite` | Off | Replace an existing synthetic CSV |
 
 The console summary displays the effective TCF and its source, the recovered
 TCF fitted from generated points, their difference, position-temperature
-correlation and the number of samples clipped to the focus interval.
+correlation and the number of samples clipped to the focus interval. Pass the
+same `--seed` to reproduce the generated temperatures and focuser positions;
+timestamps are still anchored to the current run date.
 
 ### CSV format
 
@@ -449,6 +459,9 @@ thermal model:
 
 ```json
 {
+  "valid": true,
+  "status": "valid",
+  "updated_at": "2026-09-27T20:00:00+02:00",
   "timestamp_ref": "2026-08-24 23:11:32",
   "temp_ref": 18.4,
   "focus_ref": 18700,
@@ -462,6 +475,10 @@ thermal model:
 
 | Field | Description |
 |---|---|
+| `valid` | Whether the state contains a current autofocus reference |
+| `status` | `valid` for a usable state; `invalid` after an analysis without a valid reference |
+| `invalid_reason` | Reason the latest analysis invalidated the previous state, when applicable |
+| `updated_at` | Timestamp when the state was last written or invalidated |
 | `timestamp_ref` | Timestamp of the last clean autofocus result used as reference |
 | `temp_ref` | Focuser temperature at the reference point in °C |
 | `focus_ref` | Focuser position at the reference point in steps |
@@ -474,6 +491,24 @@ thermal model:
 `last_temp_applied` and `last_focus_applied` are separate from
 `temp_ref`/`focus_ref` so the sequencer can maintain its live correction state
 without overwriting the reference measurement.
+
+State JSON includes `valid: true` for usable current references. If the latest
+analysis has no valid real autofocus reference, existing state values are
+preserved while the file is atomically updated with `valid: false`,
+`status: "invalid"` and an `invalid_reason`. The sibling sequencer rejects
+invalid state files, preventing it from applying a stale reference. Legacy
+state files without a `valid` field remain supported.
+
+CSV, state JSON and chart outputs are first written to temporary files in the
+destination directory, then replace their destination only after the write
+succeeds. This protects previously generated files from partial writes.
+
+If an analysis completes without a valid autofocus reference, the existing
+state values are preserved but marked with `"valid": false` and an
+`invalid_reason`. The sibling sequencer rejects invalid state files instead of
+applying a stale reference. Generated CSV, JSON and chart files are written to
+temporary files in their destination directories and replaced only after a
+successful write.
 
 ## Sister repository
 
@@ -606,6 +641,7 @@ the autofocus filter always uses the active `focus_center` and `focus_range`.
 python sharpcap_focuser.py --tube main --last-days 7 --auto-axis
 
 python sharpcap_focuser.py --tube guide --no-remove-outliers
+python sharpcap_focuser.py --tube guide --generate-synthetic-data --dry-run --seed 42
 
 python sharpcap_focuser.py `
   --tube main `
@@ -618,7 +654,7 @@ python sharpcap_focuser.py `
 |---|---|---|
 | `--tube` | `main` | Tube to analyse: `main` or `guide` |
 | `--config` | `focus_config.properties` beside the script | Local `.properties` configuration file |
-| `--log-path` | SharpCap log folder | SharpCap log folder path |
+| `--log-path` | SharpCap log folder | SharpCap log folder path; must exist and be a directory |
 | `--output-csv` | Per tube | Output CSV file path |
 | `--output-state-json` | Per tube | Output JSON state path |
 | `--focus-center` | None | Temporary focus centre; uses the configured range if `--focus-range` is omitted |
@@ -637,6 +673,7 @@ python sharpcap_focuser.py `
 | `--samples` | `12` | Number of synthetic samples |
 | `--student-dof` | `8` | Student's t degrees of freedom for synthetic position noise |
 | `--noise-stddev` | `12.0` | Synthetic focus-position noise target standard deviation in steps |
+| `--seed` | None | Reproducible synthetic temperatures and focus positions |
 | `--dry-run` | Off | Preview synthetic generation without writing a CSV |
 | `--overwrite` | Off | Replace an existing synthetic CSV |
 
