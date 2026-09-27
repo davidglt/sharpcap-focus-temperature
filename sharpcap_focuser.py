@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# SPDX-FileCopyrightText: 2026 David Gonzalez Lopez-Tercero <davidglt@dragonit.es>
+# Created: 2026-08-24
+# Author: David González López-Tercero <davidglt@dragonit.es>
+# SPDX-FileCopyrightText: 2026 David González López-Tercero <davidglt@dragonit.es>
+# SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
@@ -158,6 +161,7 @@ def finite_float(value: str) -> float:
 
 
 def parse_arguments():
+    """Define and parse command-line options for autofocus-log analysis."""
     parser = argparse.ArgumentParser(
         description="Extract SharpCap autofocus results and create CSV and chart."
     )
@@ -1478,6 +1482,7 @@ def run_synthetic_generation(
 
 
 def main():
+    """Run configured analysis, then save its state and generated artifacts."""
     args = parse_arguments()
 
     tube_defaults = TUBE_DEFAULTS[args.tube]

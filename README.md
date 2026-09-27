@@ -743,13 +743,15 @@ Use `--log-path` to select another folder.
    section—including `estimated_tcf` when necessary—and generate a fresh
    temporary dataset if required.
 
-## License
-
-This project is licensed under the GNU General Public License v3.0 or later.
-See `LICENSE.txt` for the full text.
-
 ## Author
 
 David González López-Tercero  
 Website: [dragonit.es](https://dragonit.es)  
 Email: [davidglt@dragonit.es](mailto:davidglt@dragonit.es)
+
+## License
+
+Copyright © 2026 David González López-Tercero.
+
+This project is licensed under the GNU General Public License v3.0 or later
+(GPL-3.0-or-later). See [LICENSE.txt](LICENSE.txt) for the full text.
